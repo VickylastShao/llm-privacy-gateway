@@ -1,7 +1,7 @@
 # Local LLM Privacy Gateway Design
 
 **Date:** 2026-07-12  
-**Status:** Approved design, pending written-spec review  
+**Status:** Approved
 **Target:** Windows-first MVP  
 **Confidence:** High for architecture and protocol scope; medium for real-world privacy recall until an in-domain evaluation corpus exists
 
@@ -218,6 +218,8 @@ Adapters return a list of typed, mutable text locations. They must never modify:
 - unknown content block types.
 
 Unknown JSON fields and SSE events are retained. Unknown API paths are rejected in strict mode. A future compatibility mode may pass them through only after explicit user activation and must mark the traffic as uninspected.
+
+Anthropic `thinking` and `redacted_thinking` blocks are opaque signed objects that must be returned unmodified. The Anthropic adapter stores those objects as `serde_json::value::RawValue` and emits their original JSON representation while rewriting only separately approved fields. It must never rebuild, reorder, redact, or normalize a signed block.
 
 ## 7. Request and response flow
 
@@ -489,7 +491,7 @@ Never persist:
 
 ### 12.1 Unit tests
 
-Cover every detector's positive, negative, and boundary cases; Chinese checksums; Unicode position mapping; overlap resolution; policy precedence; placeholder stability; profile isolation; authenticated encryption; fake-placeholder input; protocol field selection; and preservation of unknown fields.
+Cover every detector's positive, negative, and boundary cases; Chinese checksums; Unicode position mapping; overlap resolution; policy precedence; placeholder stability; profile isolation; authenticated encryption; fake-placeholder input; protocol field selection; preservation of unknown fields; and byte-identical retention of Anthropic signed thinking blocks.
 
 ### 12.2 Property tests
 
@@ -560,7 +562,7 @@ These are versioned fixture targets, not claims of perfect real-world detection.
 
 After written-spec approval, shallow-clone and pin:
 
-1. `https://github.com/jayluxferro/llm-redactor` — MIT; direct proxy, detector, restoration, and leak-evaluation reference.
+1. `https://github.com/jayluxferro/llm-redactor` — README and package metadata declare MIT, but the pinned repository has no root license text; direct proxy, detector, restoration, and leak-evaluation research only, with no code copying unless licensing is clarified.
 2. `https://github.com/openziti/llm-gateway` — Apache-2.0; single-binary routing, SSE, virtual-key, and Windows-release reference.
 3. `https://github.com/data-privacy-stack/presidio` — MIT; recognizer interfaces, overlap handling, and anonymization reference.
 4. `https://github.com/sherwinvishesh/SurrogateShield` — Apache-2.0; encrypted map and utility-evaluation reference.
