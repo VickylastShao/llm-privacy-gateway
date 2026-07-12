@@ -1247,6 +1247,7 @@ name = "privacy-core"
 version = "0.1.0"
 dependencies = [
  "aho-corasick",
+ "base64",
  "chrono",
  "regex",
  "serde",

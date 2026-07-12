@@ -47,6 +47,9 @@ impl Detector for NetworkDetector {
         }
 
         for matched in mac_regex().find_iter(text) {
+            if has_mac_neighbor(text, matched.start(), matched.end()) {
+                continue;
+            }
             add_detection(
                 &mut detections,
                 EntityKind::MacAddress,
@@ -129,6 +132,17 @@ fn mac_regex() -> &'static Regex {
         Regex::new(r"[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}|[0-9A-Fa-f]{2}(?:-[0-9A-Fa-f]{2}){5}")
             .unwrap_or_else(|error| panic!("valid MAC address regex: {error}"))
     })
+}
+
+fn has_mac_neighbor(text: &str, start: usize, end: usize) -> bool {
+    text.as_bytes()
+        .get(start.wrapping_sub(1))
+        .is_some_and(is_mac_character)
+        || text.as_bytes().get(end).is_some_and(is_mac_character)
+}
+
+fn is_mac_character(byte: &u8) -> bool {
+    byte.is_ascii_hexdigit() || matches!(*byte, b':' | b'-')
 }
 
 fn hostname_regex() -> &'static Regex {

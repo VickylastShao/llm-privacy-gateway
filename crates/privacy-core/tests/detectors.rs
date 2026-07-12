@@ -109,6 +109,41 @@ fn credentials_reject_bare_high_entropy_or_noncredential_text() {
 }
 
 #[test]
+fn credentials_require_jwt_json_header_and_payload() {
+    assert_empty(&CredentialsDetector, "abcdefgh.abcdefgh.abcdefgh");
+}
+
+#[test]
+fn credentials_require_pem_base64_body_lines() {
+    assert_empty(
+        &CredentialsDetector,
+        "-----BEGIN PRIVATE KEY----- prose only -----END PRIVATE KEY-----",
+    );
+}
+
+#[test]
+fn credentials_detect_each_allowed_connection_string_scheme() {
+    let detector = CredentialsDetector;
+    for scheme in [
+        "postgres",
+        "postgresql",
+        "mysql",
+        "mongodb",
+        "redis",
+        "amqp",
+    ] {
+        let text = format!("{scheme}://user:fixture_password@db.internal:5432/app");
+        assert_single(
+            &detector,
+            &text,
+            EntityKind::ConnectionString,
+            "connection_string",
+            &text,
+        );
+    }
+}
+
+#[test]
 fn china_id_requires_checksum_and_real_date() {
     let detector = ChinaIdDetector;
     assert_single(
@@ -218,6 +253,11 @@ fn network_detector_validates_addresses_internal_hosts_macs_and_bounded_coordina
 #[test]
 fn internal_hostname_suffix_must_end_the_hostname() {
     assert_empty(&NetworkDetector, "api.service.internal.example.com");
+}
+
+#[test]
+fn mac_address_requires_boundaries_on_both_sides() {
+    assert_empty(&NetworkDetector, "00:1A:2B:3C:4D:5E:6F");
 }
 
 #[derive(Debug, Deserialize)]

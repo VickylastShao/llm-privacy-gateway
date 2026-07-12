@@ -1,6 +1,11 @@
 use std::sync::OnceLock;
 
+use base64::{
+    Engine,
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+};
 use regex::Regex;
+use serde_json::Value;
 
 use crate::{Detection, Detector, EntityKind, PrivacyError};
 
@@ -34,7 +39,9 @@ impl Detector for CredentialsDetector {
         }
 
         for matched in jwt_regex().find_iter(text) {
-            if has_safe_key_neighbor(text, matched.start(), matched.end()) {
+            if has_safe_key_neighbor(text, matched.start(), matched.end())
+                || !is_structurally_valid_jwt(matched.as_str())
+            {
                 continue;
             }
             add_detection(
@@ -60,7 +67,7 @@ impl Detector for CredentialsDetector {
                 continue;
             };
             let footer_start = body_start + footer_offset;
-            if footer_start == body_start {
+            if !is_valid_pem_body(&text[body_start..footer_start]) {
                 continue;
             }
             add_detection(
@@ -130,6 +137,29 @@ fn jwt_regex() -> &'static Regex {
     })
 }
 
+fn is_structurally_valid_jwt(candidate: &str) -> bool {
+    let mut segments = candidate.split('.');
+    let (Some(header), Some(payload), Some(_signature), None) = (
+        segments.next(),
+        segments.next(),
+        segments.next(),
+        segments.next(),
+    ) else {
+        return false;
+    };
+    [header, payload].into_iter().all(is_base64url_json_object)
+}
+
+fn is_base64url_json_object(segment: &str) -> bool {
+    let Ok(decoded) = URL_SAFE_NO_PAD.decode(segment) else {
+        return false;
+    };
+    matches!(
+        serde_json::from_slice::<Value>(&decoded),
+        Ok(Value::Object(_))
+    )
+}
+
 fn has_safe_key_neighbor(text: &str, start: usize, end: usize) -> bool {
     text.as_bytes()
         .get(start.wrapping_sub(1))
@@ -148,6 +178,27 @@ fn pem_header_regex() -> &'static Regex {
     })
 }
 
+fn is_valid_pem_body(body: &str) -> bool {
+    let body = body
+        .strip_prefix("\r\n")
+        .or_else(|| body.strip_prefix('\n'));
+    let Some(body) = body else {
+        return false;
+    };
+    if !body.ends_with('\n') {
+        return false;
+    }
+    let lines: Vec<_> = body.lines().collect();
+    if lines.is_empty() || lines.iter().any(|line| line.is_empty() || line.len() > 64) {
+        return false;
+    }
+    let encoded = lines.concat();
+    encoded
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'+' || byte == b'/' || byte == b'=')
+        && STANDARD.decode(encoded).is_ok()
+}
+
 fn secret_assignment_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| {
@@ -161,7 +212,9 @@ fn secret_assignment_regex() -> &'static Regex {
 fn connection_string_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| {
-        Regex::new(r#"(?i)(?:postgres|mysql|mongodb|redis|amqp)://[^\s/:@]+:[^\s@]+@[^\s"']+"#)
-            .unwrap_or_else(|error| panic!("valid connection string regex: {error}"))
+        Regex::new(
+            r#"(?i)(?:postgresql|postgres|mysql|mongodb|redis|amqp)://[^\s/:@]+:[^\s@]+@[^\s"']+"#,
+        )
+        .unwrap_or_else(|error| panic!("valid connection string regex: {error}"))
     })
 }
