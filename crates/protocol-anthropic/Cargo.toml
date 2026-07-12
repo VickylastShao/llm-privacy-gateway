@@ -5,5 +5,15 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[dependencies]
+privacy-core = { path = "../privacy-core" }
+serde.workspace = true
+serde_json.workspace = true
+session-map = { path = "../session-map" }
+thiserror.workspace = true
+
+[dev-dependencies]
+uuid.workspace = true
+
 [lints]
 workspace = true

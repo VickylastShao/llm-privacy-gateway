@@ -1072,6 +1072,14 @@ dependencies = [
 [[package]]
 name = "protocol-anthropic"
 version = "0.1.0"
+dependencies = [
+ "privacy-core",
+ "serde",
+ "serde_json",
+ "session-map",
+ "thiserror",
+ "uuid",
+]
 
 [[package]]
 name = "protocol-openai"
