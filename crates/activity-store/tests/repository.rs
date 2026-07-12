@@ -43,6 +43,49 @@ fn profiles_keep_only_refs_and_activity_metadata() {
     assert!(!export.contains("CANARY_SECRET"));
     assert!(export.contains(&format!("upstream/{id}")));
 }
+
+#[test]
+fn profiles_can_be_listed_and_deleted_without_exposing_secret_values() {
+    let repo = Repository::open_in_memory().unwrap_or_else(|error| panic!("open: {error}"));
+    let first = Uuid::nil();
+    let second = Uuid::new_v4();
+    for (id, name) in [(first, "first"), (second, "second")] {
+        repo.save_profile(&ProfileInput {
+            id,
+            name: name.to_owned(),
+            protocol: Protocol::OpenAi,
+            upstream_url: "https://example.test/v1".to_owned(),
+            upstream_secret_ref: format!("upstream/{id}"),
+            local_secret_ref: format!("local/{id}"),
+            local_key_digest: [7; 32],
+            policy: "strict".to_owned(),
+        })
+        .unwrap_or_else(|error| panic!("save: {error}"));
+    }
+    let profiles = repo
+        .profiles()
+        .unwrap_or_else(|error| panic!("list: {error}"));
+    assert_eq!(profiles.len(), 2);
+    assert!(
+        profiles
+            .iter()
+            .all(|profile| profile.name != "CANARY_SECRET")
+    );
+    assert!(
+        repo.delete_profile(first)
+            .unwrap_or_else(|error| panic!("delete: {error}"))
+    );
+    assert!(
+        repo.profile(first)
+            .unwrap_or_else(|error| panic!("load: {error}"))
+            .is_none()
+    );
+    assert!(
+        !repo
+            .delete_profile(first)
+            .unwrap_or_else(|error| panic!("delete: {error}"))
+    );
+}
 #[test]
 fn url_policy_is_https_or_loopback_only() {
     assert!(validate_upstream_url("https://api.deepseek.com/v1").is_ok());

@@ -99,6 +99,41 @@ impl Repository {
     pub fn profile(&self, id: Uuid) -> Result<Option<Profile>, StoreError> {
         self.connection.query_row("SELECT id,name,protocol,upstream_url,upstream_secret_ref,local_secret_ref,local_key_digest,policy FROM profiles WHERE id=?1", [id.to_string()], |row| { let raw_id:String=row.get(0)?; let protocol:String=row.get(2)?; let digest:Vec<u8>=row.get(6)?; let parsed_id=Uuid::parse_str(&raw_id).map_err(|_| rusqlite::Error::InvalidQuery)?; let digest:[u8;32]=digest.try_into().map_err(|_| rusqlite::Error::InvalidQuery)?; Ok(Profile{id:parsed_id,name:row.get(1)?,protocol:Protocol::parse(&protocol).map_err(|_| rusqlite::Error::InvalidQuery)?,upstream_url:row.get(3)?,upstream_secret_ref:row.get(4)?,local_secret_ref:row.get(5)?,local_key_digest:digest,policy:row.get(7)?}) }).optional().map_err(|_| StoreError::Database)
     }
+    pub fn profiles(&self) -> Result<Vec<Profile>, StoreError> {
+        let mut statement = self.connection.prepare("SELECT id,name,protocol,upstream_url,upstream_secret_ref,local_secret_ref,local_key_digest,policy FROM profiles ORDER BY name,id").map_err(|_| StoreError::Database)?;
+        let rows = statement
+            .query_map([], |row| {
+                let raw_id: String = row.get(0)?;
+                let protocol: String = row.get(2)?;
+                let digest: Vec<u8> = row.get(6)?;
+                let parsed_id =
+                    Uuid::parse_str(&raw_id).map_err(|_| rusqlite::Error::InvalidQuery)?;
+                let digest: [u8; 32] = digest
+                    .try_into()
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?;
+                Ok(Profile {
+                    id: parsed_id,
+                    name: row.get(1)?,
+                    protocol: Protocol::parse(&protocol)
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    upstream_url: row.get(3)?,
+                    upstream_secret_ref: row.get(4)?,
+                    local_secret_ref: row.get(5)?,
+                    local_key_digest: digest,
+                    policy: row.get(7)?,
+                })
+            })
+            .map_err(|_| StoreError::Database)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|_| StoreError::Database)
+    }
+    pub fn delete_profile(&self, id: Uuid) -> Result<bool, StoreError> {
+        let changed = self
+            .connection
+            .execute("DELETE FROM profiles WHERE id=?1", [id.to_string()])
+            .map_err(|_| StoreError::Database)?;
+        Ok(changed == 1)
+    }
     pub fn record_activity(&self, activity: &Activity) -> Result<(), StoreError> {
         let counts =
             serde_json::to_string(&activity.category_counts).map_err(|_| StoreError::Database)?;
