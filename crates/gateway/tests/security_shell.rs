@@ -14,6 +14,18 @@ use std::sync::{Arc, Mutex};
 use tower::ServiceExt;
 use uuid::Uuid;
 
+fn local_state() -> std::sync::Arc<GatewayState> {
+    GatewayState::new([RuntimeProfile::new(
+        Uuid::nil(),
+        GatewayProtocol::OpenAi,
+        "local-limit-key".to_owned(),
+        "http://127.0.0.1:9".to_owned(),
+        SecretString::from("upstream-key"),
+        [1; 32],
+    )])
+    .unwrap_or_else(|error| panic!("gateway state: {error}"))
+}
+
 #[test]
 fn listener_refuses_non_loopback_addresses() {
     assert!(matches!(
@@ -77,6 +89,34 @@ async fn shell_has_request_ids_and_no_cors_header() {
             .headers()
             .contains_key("access-control-allow-origin")
     );
+}
+
+#[tokio::test]
+async fn unknown_routes_and_oversized_requests_fail_closed() {
+    let response = gateway_router(local_state())
+        .oneshot(
+            Request::builder()
+                .uri("/v1/unsupported")
+                .body(axum::body::Body::empty())
+                .unwrap_or_else(|error| panic!("request: {error}")),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("gateway: {error}"));
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    let response = gateway_router(local_state())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header(header::AUTHORIZATION, "Bearer local-limit-key")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(vec![b'x'; 4 * 1024 * 1024 + 1]))
+                .unwrap_or_else(|error| panic!("request: {error}")),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("gateway: {error}"));
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
 }
 
 #[tokio::test]
