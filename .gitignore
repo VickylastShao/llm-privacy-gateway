@@ -1,6 +1,12 @@
 # Read-only upstream source checkouts used for architecture research.
 /references/
 /.worktrees/
-/target/
+**/target/
 /node_modules/
 /dist/
+
+# The Windows build needs only the tracked ICO plus its SVG source. `tauri icon`
+# can generate optional mobile and Apple assets locally when those targets are added.
+/apps/desktop/src-tauri/icons/*
+!/apps/desktop/src-tauri/icons/icon.ico
+!/apps/desktop/src-tauri/icons/icon.svg
