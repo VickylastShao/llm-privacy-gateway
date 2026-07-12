@@ -79,3 +79,44 @@ fn transformer_preserves_unknown_events_byte_for_byte() {
 
     assert_eq!(output, source);
 }
+
+#[test]
+fn transformer_preserves_non_text_content_delta_byte_for_byte() {
+    let map = PseudonymMap::new(Uuid::nil(), [5; 32], MemoryBackend::default());
+    let source =
+        "event: content_block_delta\r\ndata: { \"delta\" : { \"thinking\" : \"opaque\" } }\r\n\r\n";
+
+    let output = restore_anthropic_sse(source, &map).unwrap_or_else(|e| panic!("restore: {e}"));
+
+    assert_eq!(output, source);
+}
+
+#[test]
+fn transformer_buffers_input_json_delta_until_block_stop_then_restores_json() {
+    let mut map = PseudonymMap::new(Uuid::nil(), [6; 32], MemoryBackend::default());
+    let token = map
+        .pseudonymize("email", "alice@example.test")
+        .unwrap_or_else(|e| panic!("map: {e}"));
+    let split = token.len() / 2;
+    let first = format!(r#"{{"email":"{}"#, &token[..split]);
+    let second = format!(r#"{}"}}"#, &token[split..]);
+    let delta = |partial_json: String| {
+        serde_json::json!({
+            "type": "content_block_delta",
+            "index": 1,
+            "delta": {"type": "input_json_delta", "partial_json": partial_json}
+        })
+    };
+    let source = format!(
+        "event: content_block_delta\ndata: {}\n\nevent: content_block_delta\ndata: {}\n\nevent: content_block_stop\ndata: {{\"type\":\"content_block_stop\",\"index\":1}}\n\n",
+        delta(first),
+        delta(second),
+    );
+
+    let output = restore_anthropic_sse(&source, &map).unwrap_or_else(|e| panic!("restore: {e}"));
+
+    assert_eq!(output.matches("input_json_delta").count(), 1);
+    assert!(output.contains(r#"{\"email\":\"alice@example.test\"}"#));
+    assert!(!output.contains(&token));
+    assert!(output.contains("event: content_block_stop"));
+}

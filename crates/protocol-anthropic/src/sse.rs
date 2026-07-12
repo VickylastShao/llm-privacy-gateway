@@ -9,6 +9,16 @@ pub struct AnthropicSseTransformer {
     raw: String,
     utf8_tail: Vec<u8>,
     pending: String,
+    input_json: Option<BufferedInputJson>,
+}
+
+#[derive(Debug)]
+struct BufferedInputJson {
+    index: Option<Value>,
+    template: Value,
+    partial_json: String,
+    delimiter: String,
+    line_ending: String,
 }
 
 impl AnthropicSseTransformer {
@@ -43,6 +53,7 @@ impl AnthropicSseTransformer {
                 &event,
                 &delimiter,
                 &mut self.pending,
+                &mut self.input_json,
                 map,
             )?);
         }
@@ -53,6 +64,7 @@ impl AnthropicSseTransformer {
         if !self.utf8_tail.is_empty()
             || !self.raw.is_empty()
             || !std::mem::take(&mut self.pending).is_empty()
+            || self.input_json.is_some()
         {
             return Err(AnthropicSseError::Incomplete);
         }
@@ -84,12 +96,16 @@ fn transform_raw_event<B: MappingBackend>(
     raw_event: &str,
     delimiter: &str,
     pending: &mut String,
+    input_json: &mut Option<BufferedInputJson>,
     map: &PseudonymMap<B>,
 ) -> Result<String, AnthropicSseError> {
     let lines = raw_event.lines().collect::<Vec<_>>();
     let event = lines
         .iter()
         .find_map(|line| line.strip_prefix("event:").map(str::trim_start));
+    if event == Some("content_block_stop") {
+        return flush_input_json(raw_event, delimiter, input_json, map);
+    }
     if event != Some("content_block_delta") {
         return Ok(format!("{raw_event}{delimiter}"));
     }
@@ -102,11 +118,46 @@ fn transform_raw_event<B: MappingBackend>(
     }
     let data = data.join("\n");
     let mut value: Value = serde_json::from_str(&data).map_err(|_| AnthropicSseError::Invalid)?;
+    if value
+        .get("delta")
+        .and_then(|delta| delta.get("type"))
+        .and_then(Value::as_str)
+        == Some("input_json_delta")
+    {
+        let Some(partial_json) = value
+            .get("delta")
+            .and_then(|delta| delta.get("partial_json"))
+            .and_then(Value::as_str)
+        else {
+            return Err(AnthropicSseError::Invalid);
+        };
+        let partial_json = partial_json.to_owned();
+        let index = value.get("index").cloned();
+        if let Some(buffered) = input_json.as_mut() {
+            if buffered.index != index {
+                return Err(AnthropicSseError::Invalid);
+            }
+            buffered.partial_json.push_str(&partial_json);
+        } else {
+            *input_json = Some(BufferedInputJson {
+                index,
+                template: value,
+                partial_json,
+                delimiter: delimiter.to_owned(),
+                line_ending: if raw_event.contains("\r\n") {
+                    "\r\n".to_owned()
+                } else {
+                    "\n".to_owned()
+                },
+            });
+        }
+        return Ok(String::new());
+    }
     let Some(text_value) = value
         .get_mut("delta")
         .and_then(|delta| delta.get_mut("text"))
     else {
-        return Ok(format!("{raw_event}\n\n"));
+        return Ok(format!("{raw_event}{delimiter}"));
     };
     let Some(text) = text_value.as_str() else {
         return Err(AnthropicSseError::Invalid);
@@ -135,6 +186,46 @@ fn transform_raw_event<B: MappingBackend>(
         }
     }
     Ok(format!("{}{delimiter}", output.join(line_ending)))
+}
+
+fn flush_input_json<B: MappingBackend>(
+    raw_event: &str,
+    delimiter: &str,
+    input_json: &mut Option<BufferedInputJson>,
+    map: &PseudonymMap<B>,
+) -> Result<String, AnthropicSseError> {
+    let Some(buffered) = input_json.as_ref() else {
+        return Ok(format!("{raw_event}{delimiter}"));
+    };
+    let data = raw_event
+        .lines()
+        .filter_map(|line| line.strip_prefix("data:").map(str::trim_start))
+        .collect::<Vec<_>>();
+    if data.is_empty() {
+        return Err(AnthropicSseError::Invalid);
+    }
+    let stop: Value =
+        serde_json::from_str(&data.join("\n")).map_err(|_| AnthropicSseError::Invalid)?;
+    if stop.get("index").cloned() != buffered.index {
+        return Ok(format!("{raw_event}{delimiter}"));
+    }
+    let mut buffered = input_json.take().ok_or(AnthropicSseError::Invalid)?;
+    let restored = map
+        .restore_text(&buffered.partial_json)
+        .map_err(|_| AnthropicSseError::Mapping)?;
+    serde_json::from_str::<Value>(&restored).map_err(|_| AnthropicSseError::Invalid)?;
+    *buffered
+        .template
+        .get_mut("delta")
+        .and_then(|delta| delta.get_mut("partial_json"))
+        .ok_or(AnthropicSseError::Invalid)? = Value::String(restored);
+    let payload =
+        serde_json::to_string(&buffered.template).map_err(|_| AnthropicSseError::Invalid)?;
+    let delta_event = format!(
+        "event: content_block_delta{}data: {payload}{}",
+        buffered.line_ending, buffered.delimiter
+    );
+    Ok(format!("{delta_event}{raw_event}{delimiter}"))
 }
 
 fn find_event_boundary(input: &str) -> Option<(usize, usize)> {
