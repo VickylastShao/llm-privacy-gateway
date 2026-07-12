@@ -241,6 +241,23 @@ where
                         };
                         bytes = Bytes::from(restored);
                     }
+                    if is_sse && protocol == GatewayProtocol::Anthropic {
+                        let Ok(text) = std::str::from_utf8(&bytes) else {
+                            return (StatusCode::BAD_GATEWAY, "invalid upstream SSE")
+                                .into_response();
+                        };
+                        let Ok(mapping) = profile.mappings.lock() else {
+                            return (StatusCode::INTERNAL_SERVER_ERROR, "mapping unavailable")
+                                .into_response();
+                        };
+                        let Ok(restored) =
+                            protocol_anthropic::restore_anthropic_sse(text, &mapping)
+                        else {
+                            return (StatusCode::BAD_GATEWAY, "upstream SSE restoration failed")
+                                .into_response();
+                        };
+                        bytes = Bytes::from(restored);
+                    }
                     let mut result = Response::new(Body::from(bytes));
                     *result.status_mut() = status;
                     if let Some(content_type) = content_type {
