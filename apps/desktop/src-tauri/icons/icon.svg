@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="LLM Privacy Gateway">
+  <rect width="1024" height="1024" rx="208" fill="#0F172A"/>
+  <path d="M512 136 796 250v220c0 189-112 333-284 418C340 803 228 659 228 470V250l284-114Z" fill="#22C55E"/>
+  <path d="M512 214 722 298v172c0 145-78 258-210 335-132-77-210-190-210-335V298l210-84Z" fill="#14532D"/>
+  <rect x="348" y="456" width="328" height="244" rx="40" fill="#F8FAFC"/>
+  <path d="M410 456v-62c0-57 46-103 102-103s102 46 102 103v62h-56v-62c0-26-20-47-46-47s-46 21-46 47v62h-56Z" fill="#F8FAFC"/>
+  <circle cx="512" cy="570" r="35" fill="#14532D"/>
+  <path d="M492 600h40l15 58h-70l15-58Z" fill="#14532D"/>
+</svg>
