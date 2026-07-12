@@ -1,0 +1,54 @@
+[workspace]
+resolver = "3"
+members = [
+    "apps/cli",
+    "crates/activity-store",
+    "crates/gateway",
+    "crates/privacy-core",
+    "crates/protocol-anthropic",
+    "crates/protocol-openai",
+    "crates/secret-store",
+    "crates/session-map",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+rust-version = "1.97"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+
+[workspace.dependencies]
+aes-gcm = "0.10"
+aho-corasick = "1"
+anyhow = "1"
+async-trait = "0.1"
+axum = "0.8"
+base32 = "0.5"
+bytes = "1"
+chrono = { version = "0.4", features = ["serde"] }
+hmac = "0.12"
+http = "1"
+rand = "0.9"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+secrecy = { version = "0.10", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+sha2 = "0.10"
+subtle = "2"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-stream = "0.1"
+tower = { version = "0.5", features = ["limit", "timeout", "util"] }
+tower-http = { version = "0.6", features = ["limit", "request-id", "trace"] }
+tracing = "0.1"
+url = "2"
+uuid = { version = "1", features = ["serde", "v4"] }
