@@ -14,7 +14,11 @@ use rand::{TryRngCore, rngs::OsRng};
 use secrecy::{ExposeSecret, SecretString};
 use secret_store::{MemorySecretStore, SecretKind, SecretStore, service_account};
 use serde::{Deserialize, Serialize};
-use tauri::{Manager, State};
+use tauri::{
+    Manager, State, WindowEvent,
+    menu::{Menu, MenuItem},
+    tray::TrayIconBuilder,
+};
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
@@ -488,7 +492,44 @@ pub fn run() {
                 DesktopState::open(&directory.join("profiles.sqlite"))
                     .map_err(std::io::Error::other)?,
             );
+            let show = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
+            let start = MenuItem::with_id(app, "start", "Start Gateway", true, None::<&str>)?;
+            let stop = MenuItem::with_id(app, "stop", "Stop Gateway", true, None::<&str>)?;
+            let exit = MenuItem::with_id(app, "exit", "Exit", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show, &start, &stop, &exit])?;
+            let mut tray = TrayIconBuilder::with_id("main")
+                .menu(&menu)
+                .tooltip("LLM Privacy Gateway")
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    "show" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                    "start" => {
+                        let _ = start_gateway(app.state());
+                    }
+                    "stop" => {
+                        let _ = stop_gateway(app.state());
+                    }
+                    "exit" => {
+                        let _ = stop_gateway(app.state());
+                        app.exit(0);
+                    }
+                    _ => {}
+                });
+            if let Some(icon) = app.default_window_icon() {
+                tray = tray.icon(icon.clone());
+            }
+            tray.build(app)?;
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
         })
         .invoke_handler(tauri::generate_handler![
             gateway_status,
