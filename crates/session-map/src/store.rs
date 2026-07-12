@@ -1,10 +1,11 @@
 use std::collections::{HashMap, HashSet};
 
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{MapError, crypto, token_for};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EncryptedRecord {
     token: String,
     kind: String,
@@ -48,7 +49,7 @@ pub trait MappingBackend {
     fn clear(&mut self) -> Result<(), MapError>;
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MemoryBackend {
     records: HashMap<String, EncryptedRecord>,
 }
