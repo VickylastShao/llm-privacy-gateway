@@ -7,6 +7,7 @@ use gateway::{
     AuthProfile, GatewayConfig, GatewayError, GatewayProtocol, GatewayState, RuntimeProfile,
     authenticate, gateway_router, local_key_digest, router,
 };
+use http_body_util::BodyExt;
 use secrecy::SecretString;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
@@ -131,4 +132,43 @@ async fn transformed_canary_never_reaches_mock_upstream_in_plaintext() {
             .unwrap_or_else(|_| panic!("capture lock"))
             .contains("canary@example.test")
     );
+}
+
+#[tokio::test]
+async fn openai_sse_response_restores_pseudonyms_before_returning_to_client() {
+    let mock = axum::Router::new().route("/v1/chat/completions", post(|body: String| async move {
+        let token = serde_json::from_str::<serde_json::Value>(&body).unwrap_or_else(|error| panic!("mock JSON: {error}"))["messages"][0]["content"].as_str().unwrap_or_else(|| panic!("content must be string")).to_owned();
+        let split = token.len() / 2;
+        ([("content-type", "text/event-stream")], format!("data: {{\"choices\":[{{\"delta\":{{\"content\":\"{}\"}}}}]}}\n\ndata: {{\"choices\":[{{\"delta\":{{\"content\":\"{}\"}}}}]}}\n\ndata: [DONE]\n\n", &token[..split], &token[split..]))
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap_or_else(|error| panic!("mock bind: {error}"));
+    let address = listener
+        .local_addr()
+        .unwrap_or_else(|error| panic!("mock address: {error}"));
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, mock).await;
+    });
+    let profile = RuntimeProfile::new(
+        Uuid::nil(),
+        GatewayProtocol::OpenAi,
+        "local-sse-key".to_owned(),
+        format!("http://{address}"),
+        SecretString::from("upstream-key"),
+        [9; 32],
+    );
+    let state =
+        GatewayState::new([profile]).unwrap_or_else(|error| panic!("gateway state: {error}"));
+    let response = gateway_router(state).oneshot(Request::builder().method("POST").uri("/v1/chat/completions").header(header::AUTHORIZATION, "Bearer local-sse-key").header(header::CONTENT_TYPE, "application/json").body(axum::body::Body::from("{\"model\":\"test\",\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"alice@example.test\"}]}" )).unwrap_or_else(|error| panic!("request: {error}"))).await.unwrap_or_else(|error| panic!("gateway response: {error}"));
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .unwrap_or_else(|error| panic!("body: {error}"))
+        .to_bytes();
+    let text = String::from_utf8(bytes.to_vec()).unwrap_or_else(|error| panic!("UTF-8: {error}"));
+    assert!(text.contains("alice@example.test"));
+    assert!(!text.contains("__LPG_"));
 }

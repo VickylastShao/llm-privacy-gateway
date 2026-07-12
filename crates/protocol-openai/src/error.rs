@@ -6,4 +6,8 @@ pub enum OpenAiProtocolError {
     Privacy,
     #[error("SSE event exceeds the configured limit")]
     SseEventTooLarge,
+    #[error("SSE data payload is invalid JSON")]
+    InvalidSseJson,
+    #[error("SSE stream ended with an incomplete placeholder")]
+    IncompletePlaceholder,
 }
