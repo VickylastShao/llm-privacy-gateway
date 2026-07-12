@@ -5,12 +5,16 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use activity_store::validate_upstream_url;
-use gateway::{GatewayConfig, GatewayProtocol, GatewayState, RuntimeProfile, start_with_shutdown};
+use activity_store::{ProfileInput, Protocol, Repository, validate_upstream_url};
+use gateway::{
+    GatewayConfig, GatewayProtocol, GatewayState, RuntimeProfile, local_key_digest,
+    start_with_shutdown,
+};
 use rand::{TryRngCore, rngs::OsRng};
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
+use secret_store::{MemorySecretStore, SecretKind, SecretStore, service_account};
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{Manager, State};
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
@@ -72,6 +76,72 @@ struct GatewayControl {
 struct DesktopState {
     gateway: Arc<Mutex<GatewayControl>>,
     profiles: Arc<Mutex<Vec<DesktopProfile>>>,
+    repository: Arc<Mutex<Repository>>,
+    secrets: Arc<dyn SecretStore>,
+}
+
+impl DesktopState {
+    fn open(database_path: &std::path::Path) -> Result<Self, String> {
+        let repository =
+            Repository::open(database_path).map_err(|_| "profile database unavailable")?;
+        let secrets = default_secret_store();
+        let mut profiles = Vec::new();
+        for stored in repository
+            .profiles()
+            .map_err(|_| "profile database unavailable")?
+        {
+            let upstream = secrets
+                .get(SecretKind::Upstream, stored.id)
+                .map_err(|_| "credential store unavailable")?;
+            let local = secrets
+                .get(SecretKind::Local, stored.id)
+                .map_err(|_| "credential store unavailable")?;
+            let mapping = secrets
+                .get(SecretKind::Mapping, stored.id)
+                .map_err(|_| "credential store unavailable")?;
+            let (Some(upstream_key), Some(local_key), Some(mapping_key)) =
+                (upstream, local, mapping)
+            else {
+                continue;
+            };
+            let Ok(mapping_key) = decode_mapping_key(mapping_key.expose_secret()) else {
+                continue;
+            };
+            profiles.push(DesktopProfile {
+                id: stored.id,
+                summary: ProfileSummary {
+                    id: stored.id.to_string(),
+                    name: stored.name,
+                    protocol: match stored.protocol {
+                        Protocol::OpenAi => "openai".to_owned(),
+                        Protocol::Anthropic => "anthropic".to_owned(),
+                    },
+                    upstream_url: stored.upstream_url,
+                    policy: stored.policy,
+                },
+                upstream_key,
+                local_key: local_key.expose_secret().to_owned(),
+                mapping_key,
+            });
+        }
+        Ok(Self {
+            gateway: Arc::new(Mutex::new(GatewayControl::default())),
+            profiles: Arc::new(Mutex::new(profiles)),
+            repository: Arc::new(Mutex::new(repository)),
+            secrets,
+        })
+    }
+}
+
+fn default_secret_store() -> Arc<dyn SecretStore> {
+    #[cfg(target_os = "windows")]
+    {
+        Arc::new(secret_store::WindowsCredentialStore)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Arc::new(MemorySecretStore::default())
+    }
 }
 
 #[tauri::command]
@@ -209,6 +279,44 @@ fn create_profile(
         upstream_url: draft.upstream_url,
         policy: draft.policy,
     };
+    let mapping_secret = encode_mapping_key(mapping_key);
+    state
+        .secrets
+        .put(
+            SecretKind::Upstream,
+            id,
+            SecretString::from(draft.upstream_key.clone()),
+        )
+        .map_err(|_| "credential storage failed")?;
+    state
+        .secrets
+        .put(SecretKind::Local, id, SecretString::from(local_key.clone()))
+        .map_err(|_| "credential storage failed")?;
+    state
+        .secrets
+        .put(SecretKind::Mapping, id, SecretString::from(mapping_secret))
+        .map_err(|_| "credential storage failed")?;
+    let protocol = match protocol_from_str(&summary.protocol)? {
+        GatewayProtocol::OpenAi => Protocol::OpenAi,
+        GatewayProtocol::Anthropic => Protocol::Anthropic,
+    };
+    let (_, upstream_secret_ref) = service_account(SecretKind::Upstream, id);
+    let (_, local_secret_ref) = service_account(SecretKind::Local, id);
+    state
+        .repository
+        .lock()
+        .map_err(|_| "profile database unavailable")?
+        .save_profile(&ProfileInput {
+            id,
+            name: summary.name.clone(),
+            protocol,
+            upstream_url: summary.upstream_url.clone(),
+            upstream_secret_ref,
+            local_secret_ref,
+            local_key_digest: local_key_digest(&local_key),
+            policy: summary.policy.clone(),
+        })
+        .map_err(|_| "profile persistence failed")?;
     state
         .profiles
         .lock()
@@ -250,6 +358,19 @@ fn delete_profile(id: String, state: State<'_, DesktopState>) -> Result<(), Stri
     if profiles.len() == before {
         return Err("profile does not exist".to_owned());
     }
+    let id = Uuid::parse_str(&id).map_err(|_| "profile does not exist")?;
+    state
+        .repository
+        .lock()
+        .map_err(|_| "profile database unavailable")?
+        .delete_profile(id)
+        .map_err(|_| "profile persistence failed")?;
+    for kind in [SecretKind::Upstream, SecretKind::Local, SecretKind::Mapping] {
+        state
+            .secrets
+            .delete(kind, id)
+            .map_err(|_| "credential removal failed")?;
+    }
     Ok(())
 }
 
@@ -276,6 +397,14 @@ fn rotate_local_key(
         .find(|profile| profile.summary.id == id)
         .ok_or_else(|| "profile does not exist".to_owned())?;
     profile.local_key = format!("lpg_local_{}", Uuid::new_v4());
+    state
+        .secrets
+        .put(
+            SecretKind::Local,
+            profile.id,
+            SecretString::from(profile.local_key.clone()),
+        )
+        .map_err(|_| "credential storage failed")?;
     Ok(serde_json::json!({"profile_id": id, "local_key": profile.local_key}))
 }
 
@@ -313,9 +442,34 @@ fn policy_from_str(value: &str) -> Result<privacy_core::Policy, String> {
     }
 }
 
+fn encode_mapping_key(key: [u8; 32]) -> String {
+    key.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+fn decode_mapping_key(value: &str) -> Result<[u8; 32], ()> {
+    if value.len() != 64 {
+        return Err(());
+    }
+    let mut output = [0_u8; 32];
+    for (index, byte) in output.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16).map_err(|_| ())?;
+    }
+    Ok(output)
+}
+
 pub fn run() {
     tauri::Builder::default()
-        .manage(DesktopState::default())
+        .setup(|app| {
+            let directory = app
+                .path()
+                .app_data_dir()
+                .map_err(|_| std::io::Error::other("application data directory unavailable"))?;
+            std::fs::create_dir_all(&directory)?;
+            app.manage(
+                DesktopState::open(&directory.join("profiles.sqlite"))
+                    .map_err(std::io::Error::other)?,
+            );
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             gateway_status,
             start_gateway,
