@@ -27,14 +27,14 @@ jobs:
       - name: Generate SHA-256 checksums
         shell: pwsh
         run: |
-          Get-ChildItem -Recurse target/release/bundle | Where-Object { -not $_.PSIsContainer } | Get-FileHash -Algorithm SHA256 | ForEach-Object { "{0}  {1}" -f $_.Hash.ToLower(), $_.Path } | Set-Content target/release/bundle/SHA256SUMS.txt
+          Get-ChildItem -Recurse apps/desktop/src-tauri/target/release/bundle | Where-Object { -not $_.PSIsContainer } | Get-FileHash -Algorithm SHA256 | ForEach-Object { "{0}  {1}" -f $_.Hash.ToLower(), $_.Path } | Set-Content apps/desktop/src-tauri/target/release/bundle/SHA256SUMS.txt
       - uses: anchore/sbom-action@v0
         with:
-          path: target/release/bundle
+          path: apps/desktop/src-tauri/target/release/bundle
           artifact-name: lpg-sbom.spdx.json
       - uses: softprops/action-gh-release@v2
         with:
           draft: true
           generate_release_notes: true
           files: |
-            target/release/bundle/**
+            apps/desktop/src-tauri/target/release/bundle/**
