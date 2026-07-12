@@ -260,6 +260,18 @@ fn mac_address_requires_boundaries_on_both_sides() {
     assert_empty(&NetworkDetector, "00:1A:2B:3C:4D:5E:6F");
 }
 
+#[test]
+fn mac_address_rejects_left_hexadecimal_neighbor() {
+    assert_empty(&NetworkDetector, "A00:1A:2B:3C:4D:5E");
+}
+
+#[test]
+fn mac_address_rejects_hyphen_neighbors() {
+    for text in ["-00:1A:2B:3C:4D:5E", "00:1A:2B:3C:4D:5E-"] {
+        assert_empty(&NetworkDetector, text);
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct Fixture {
     id: String,
