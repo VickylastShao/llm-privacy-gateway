@@ -6,10 +6,10 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-privacy-core = { path = "../privacy-core" }
+privacy-core = { path = "../privacy-core", version = "0.1.0" }
 serde.workspace = true
 serde_json.workspace = true
-session-map = { path = "../session-map" }
+session-map = { path = "../session-map", version = "0.1.0" }
 thiserror.workspace = true
 
 [dev-dependencies]

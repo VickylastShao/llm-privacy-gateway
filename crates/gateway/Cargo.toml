@@ -10,13 +10,13 @@ axum.workspace = true
 bytes.workspace = true
 futures-util.workspace = true
 http.workspace = true
-privacy-core = { path = "../privacy-core" }
-protocol-anthropic = { path = "../protocol-anthropic" }
-protocol-openai = { path = "../protocol-openai" }
+privacy-core = { path = "../privacy-core", version = "0.1.0" }
+protocol-anthropic = { path = "../protocol-anthropic", version = "0.1.0" }
+protocol-openai = { path = "../protocol-openai", version = "0.1.0" }
 reqwest.workspace = true
 secrecy.workspace = true
 serde_json.workspace = true
-session-map = { path = "../session-map" }
+session-map = { path = "../session-map", version = "0.1.0" }
 sha2.workspace = true
 subtle.workspace = true
 thiserror.workspace = true

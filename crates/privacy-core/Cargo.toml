@@ -9,7 +9,7 @@ rust-version.workspace = true
 aho-corasick.workspace = true
 chrono.workspace = true
 regex.workspace = true
-session-map = { path = "../session-map" }
+session-map = { path = "../session-map", version = "0.1.0" }
 thiserror.workspace = true
 
 [dev-dependencies]
