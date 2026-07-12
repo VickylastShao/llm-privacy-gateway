@@ -13,8 +13,23 @@ function listen() {
       const chunks = [];
       request.on("data", (chunk) => chunks.push(chunk));
       request.on("end", () => {
-        captures.push({ path: request.url, body: Buffer.concat(chunks).toString("utf8") });
-        const payload = request.url === "/v1/messages"
+        const body = Buffer.concat(chunks).toString("utf8");
+        const parsed = JSON.parse(body);
+        captures.push({ path: request.url, body });
+        if (parsed.model === "force-error") {
+          response.writeHead(400, { "content-type": "application/json" });
+          response.end(JSON.stringify({ error: { message: "forced mock error", type: "invalid_request_error" } }));
+          return;
+        }
+        if (parsed.stream && request.url === "/chat/completions") {
+          const event = { id: "chatcmpl_stream_mock", object: "chat.completion.chunk", created: 1, model: "mock", choices: [{ index: 0, delta: { content: "ok" }, finish_reason: "stop" }] };
+          response.writeHead(200, { "content-type": "text/event-stream" });
+          response.end(`data: ${JSON.stringify(event)}\n\ndata: [DONE]\n\n`);
+          return;
+        }
+        const payload = request.url === "/v1/messages/count_tokens"
+          ? { input_tokens: 1 }
+          : request.url === "/v1/messages"
           ? { id: "msg_mock", type: "message", role: "assistant", model: "mock", content: [{ type: "text", text: "ok" }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } }
           : { id: "chatcmpl_mock", object: "chat.completion", created: 1, model: "mock", choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } };
         response.writeHead(200, { "content-type": "application/json" });
@@ -35,7 +50,7 @@ async function startGateway(protocol, upstreamPort) {
   throw new Error("gateway did not start");
 }
 
-test("OpenAI and Anthropic Node SDKs use the local gateway without leaking a canary", { concurrency: false }, async () => {
+test("OpenAI and Anthropic Node SDKs use the local gateway without leaking canaries", { concurrency: false }, async () => {
   const upstream = await listen();
   try {
     let gateway = await startGateway("openai", upstream.address().port);
@@ -43,6 +58,15 @@ test("OpenAI and Anthropic Node SDKs use the local gateway without leaking a can
     const response = await openai.chat.completions.create({ model: "mock", messages: [{ role: "user", content: "node-canary@example.test" }] });
     assert.equal(response.choices[0].message.content, "ok");
     assert.ok(!captures.at(-1).body.includes("node-canary@example.test"));
+    const stream = await openai.chat.completions.create({ model: "mock", stream: true, messages: [{ role: "user", content: "stream-canary@example.test" }] });
+    let streamed = "";
+    for await (const chunk of stream) streamed += chunk.choices[0].delta.content ?? "";
+    assert.equal(streamed, "ok");
+    assert.ok(!captures.at(-1).body.includes("stream-canary@example.test"));
+    await openai.chat.completions.create({ model: "mock", messages: [{ role: "user", content: "tool-canary@example.test" }], tools: [{ type: "function", function: { name: "lookup", parameters: { type: "object" } } }] });
+    assert.ok(!captures.at(-1).body.includes("tool-canary@example.test"));
+    await assert.rejects(() => openai.chat.completions.create({ model: "force-error", messages: [{ role: "user", content: "error-canary@example.test" }] }));
+    assert.ok(!captures.at(-1).body.includes("error-canary@example.test"));
     gateway.process.kill();
 
     gateway = await startGateway("anthropic", upstream.address().port);
@@ -50,6 +74,9 @@ test("OpenAI and Anthropic Node SDKs use the local gateway without leaking a can
     const message = await anthropic.messages.create({ model: "mock", max_tokens: 8, messages: [{ role: "user", content: "node-canary@example.test" }] });
     assert.equal(message.content[0].text, "ok");
     assert.ok(!captures.at(-1).body.includes("node-canary@example.test"));
+    const count = await anthropic.messages.countTokens({ model: "mock", messages: [{ role: "user", content: "count-canary@example.test" }] });
+    assert.equal(count.input_tokens, 1);
+    assert.ok(!captures.at(-1).body.includes("count-canary@example.test"));
     gateway.process.kill();
   } finally { await new Promise((resolve) => upstream.close(resolve)); }
 });
