@@ -2559,8 +2559,10 @@ name = "privacy-core"
 version = "0.1.0"
 dependencies = [
  "aho-corasick",
+ "base64 0.22.1",
  "chrono",
  "regex",
+ "serde_json",
  "session-map",
  "thiserror 2.0.18",
 ]
