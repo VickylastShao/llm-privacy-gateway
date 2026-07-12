@@ -262,6 +262,44 @@ where
                 }
                 return result;
             }
+            if is_sse && protocol == GatewayProtocol::Anthropic {
+                let profile = Arc::clone(profile);
+                let transformer = Arc::new(std::sync::Mutex::new(
+                    protocol_anthropic::AnthropicSseTransformer::default(),
+                ));
+                let transforming = Arc::clone(&transformer);
+                let transformed = response.bytes_stream().map(move |chunk| {
+                    let bytes =
+                        chunk.map_err(|_| std::io::Error::other("upstream response failed"))?;
+                    let mut transformer = transforming
+                        .lock()
+                        .map_err(|_| std::io::Error::other("SSE transformer unavailable"))?;
+                    let mapping = profile
+                        .mappings
+                        .lock()
+                        .map_err(|_| std::io::Error::other("mapping unavailable"))?;
+                    transformer
+                        .push_bytes(&bytes, &mapping)
+                        .map(Bytes::from)
+                        .map_err(|_| std::io::Error::other("SSE restoration failed"))
+                });
+                let final_transformer = Arc::clone(&transformer);
+                let trailing = stream::once(async move {
+                    let mut transformer = final_transformer
+                        .lock()
+                        .map_err(|_| std::io::Error::other("SSE transformer unavailable"))?;
+                    transformer
+                        .finish()
+                        .map(Bytes::from)
+                        .map_err(|_| std::io::Error::other("SSE restoration failed"))
+                });
+                let mut result = Response::new(Body::from_stream(transformed.chain(trailing)));
+                *result.status_mut() = status;
+                if let Some(content_type) = content_type {
+                    result.headers_mut().insert("content-type", content_type);
+                }
+                return result;
+            }
             match response.bytes().await {
                 Ok(mut bytes) => {
                     if is_sse && protocol == GatewayProtocol::Anthropic {
