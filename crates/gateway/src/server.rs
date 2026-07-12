@@ -56,6 +56,17 @@ pub async fn start(config: GatewayConfig) -> Result<(), GatewayError> {
         .await
         .map_err(|_| GatewayError::Listener)
 }
+pub async fn start_with_state(
+    config: GatewayConfig,
+    state: Arc<GatewayState>,
+) -> Result<(), GatewayError> {
+    let listener = tokio::net::TcpListener::bind(config.bind())
+        .await
+        .map_err(|_| GatewayError::Listener)?;
+    axum::serve(listener, gateway_router(state))
+        .await
+        .map_err(|_| GatewayError::Listener)
+}
 
 async fn openai_chat(
     State(state): State<Arc<GatewayState>>,

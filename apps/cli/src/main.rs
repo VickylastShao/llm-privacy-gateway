@@ -10,10 +10,12 @@ use std::{
 };
 
 use clap::{Args, Parser, Subcommand};
+use gateway::{GatewayConfig, GatewayProtocol, GatewayState, RuntimeProfile, start_with_state};
 use privacy_core::{
     BankCardDetector, ChinaIdDetector, CredentialsDetector, EntityKind, NetworkDetector, Policy,
     PrivacyEngine, StaticDictionary, UnifiedSocialCreditCodeDetector,
 };
+use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use session_map::{MemoryBackend, PseudonymMap};
 use uuid::Uuid;
@@ -34,6 +36,7 @@ enum Command {
     Transform(MappingArgs),
     Restore(MappingArgs),
     Eval { path: PathBuf },
+    Serve(ServeArgs),
 }
 
 #[derive(Debug, Args)]
@@ -55,6 +58,22 @@ struct MappingArgs {
     /// 32-byte mapping key encoded as exactly 64 hexadecimal characters.
     #[arg(long)]
     mapping_key: String,
+}
+
+#[derive(Debug, Args)]
+struct ServeArgs {
+    #[arg(long, default_value = "127.0.0.1:17891")]
+    bind: std::net::SocketAddr,
+    #[arg(long, value_parser = ["openai", "anthropic"])]
+    protocol: String,
+    #[arg(long)]
+    upstream_base_url: String,
+    #[arg(long, default_value = "LPG_UPSTREAM_API_KEY")]
+    upstream_key_env: String,
+    #[arg(long, default_value = "LPG_LOCAL_API_KEY")]
+    local_key_env: String,
+    #[arg(long, default_value = "LPG_MAPPING_KEY_HEX")]
+    mapping_key_env: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -97,7 +116,39 @@ fn run(cli: Cli) -> Result<ExitCode, String> {
             restore(text, args)
         }
         Command::Eval { path } => eval::run(&path),
+        Command::Serve(args) => serve(args),
     }
+}
+
+fn serve(args: ServeArgs) -> Result<ExitCode, String> {
+    let upstream_key = std::env::var(&args.upstream_key_env)
+        .map_err(|_| format!("missing {}", args.upstream_key_env))?;
+    let local_key = std::env::var(&args.local_key_env)
+        .map_err(|_| format!("missing {}", args.local_key_env))?;
+    let mapping_key = decode_key(
+        &std::env::var(&args.mapping_key_env)
+            .map_err(|_| format!("missing {}", args.mapping_key_env))?,
+    )?;
+    let protocol = match args.protocol.as_str() {
+        "openai" => GatewayProtocol::OpenAi,
+        "anthropic" => GatewayProtocol::Anthropic,
+        _ => return Err("unsupported protocol".to_owned()),
+    };
+    let profile = RuntimeProfile::new(
+        Uuid::new_v4(),
+        protocol,
+        local_key,
+        args.upstream_base_url,
+        SecretString::from(upstream_key),
+        mapping_key,
+    );
+    let state = GatewayState::new([profile]).map_err(|error| error.to_string())?;
+    let config = GatewayConfig::new(args.bind).map_err(|error| error.to_string())?;
+    tokio::runtime::Runtime::new()
+        .map_err(|error| error.to_string())?
+        .block_on(start_with_state(config, state))
+        .map_err(|error| error.to_string())?;
+    Ok(ExitCode::SUCCESS)
 }
 
 fn engine() -> PrivacyEngine {

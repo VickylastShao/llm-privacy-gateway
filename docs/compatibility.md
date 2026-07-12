@@ -6,6 +6,6 @@ Implemented protocol primitives:
 | --- | --- | --- |
 | OpenAI Chat Completions | message text, text blocks, tool arguments | event framing and placeholder restoration |
 | OpenAI Responses | instructions, string input, input_text, function output | event framing and placeholder restoration |
-| Anthropic Messages | system, text, tool result/input strings | not yet connected to gateway route |
+| Anthropic Messages/count_tokens | system, text, tool result/input strings | request JSON connected; stream handling pending |
 
-Gateway route forwarding and official SDK end-to-end compatibility tests remain required before a release claim.
+Gateway JSON forwarding is implemented. Official SDK and end-to-end stream compatibility tests remain required before a release claim.
