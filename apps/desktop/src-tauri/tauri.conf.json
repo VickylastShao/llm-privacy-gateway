@@ -1,0 +1,1 @@
+{"productName":"LLM Privacy Gateway","version":"0.1.0","identifier":"com.local.llmprivacygateway","build":{"frontendDist":"../../../dist"},"app":{"windows":[{"title":"LLM Privacy Gateway","width":1080,"height":720}],"security":{"csp":"default-src 'self'; style-src 'self' 'unsafe-inline';"}},"bundle":{"active":true,"targets":"nsis"}}
