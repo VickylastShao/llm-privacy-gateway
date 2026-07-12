@@ -26,8 +26,13 @@ tower-http.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+criterion = "0.5"
 http-body-util = "0.1"
 tower = { workspace = true, features = ["util"] }
+
+[[bench]]
+name = "scan"
+harness = false
 
 [lints]
 workspace = true
