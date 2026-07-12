@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{future::Future, sync::Arc};
 
 use axum::{
     Router,
@@ -66,6 +66,23 @@ pub async fn start_with_state(
         .await
         .map_err(|_| GatewayError::Listener)?;
     axum::serve(listener, gateway_router(state))
+        .await
+        .map_err(|_| GatewayError::Listener)
+}
+
+pub async fn start_with_shutdown<F>(
+    config: GatewayConfig,
+    state: Arc<GatewayState>,
+    shutdown: F,
+) -> Result<(), GatewayError>
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    let listener = tokio::net::TcpListener::bind(config.bind())
+        .await
+        .map_err(|_| GatewayError::Listener)?;
+    axum::serve(listener, gateway_router(state))
+        .with_graceful_shutdown(shutdown)
         .await
         .map_err(|_| GatewayError::Listener)
 }

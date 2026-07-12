@@ -28,6 +28,15 @@ fn local_state() -> std::sync::Arc<GatewayState> {
     .unwrap_or_else(|error| panic!("gateway state: {error}"))
 }
 
+fn unused_loopback_port() -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap_or_else(|error| panic!("temporary bind: {error}"));
+    listener
+        .local_addr()
+        .unwrap_or_else(|error| panic!("temporary address: {error}"))
+        .port()
+}
+
 #[test]
 fn listener_refuses_non_loopback_addresses() {
     assert!(matches!(
@@ -35,6 +44,32 @@ fn listener_refuses_non_loopback_addresses() {
         Err(GatewayError::NonLoopbackBind)
     ));
     assert!(GatewayConfig::new(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 17891)).is_ok());
+}
+
+#[tokio::test]
+async fn gateway_can_stop_gracefully_after_a_local_shutdown_signal() {
+    let config = GatewayConfig::new(SocketAddr::new(
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        unused_loopback_port(),
+    ))
+    .unwrap_or_else(|error| panic!("config: {error}"));
+    let (shutdown, receiver) = tokio::sync::oneshot::channel::<()>();
+    let task = tokio::spawn(gateway::start_with_shutdown(
+        config,
+        local_state(),
+        async move {
+            let _ = receiver.await;
+        },
+    ));
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    shutdown
+        .send(())
+        .unwrap_or_else(|_| panic!("shutdown send"));
+    assert!(
+        task.await
+            .unwrap_or_else(|error| panic!("gateway task: {error}"))
+            .is_ok()
+    );
 }
 
 #[test]
