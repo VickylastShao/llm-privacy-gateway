@@ -353,3 +353,106 @@ async fn anthropic_gateway_forwards_signed_thinking_blocks_as_raw_json() {
     assert!(captured.contains(signed));
     assert!(!captured.contains("canary@example.test"));
 }
+
+#[tokio::test]
+async fn responses_and_count_tokens_do_not_forward_plaintext_canaries() {
+    let captured = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+    let mock = axum::Router::new()
+        .route(
+            "/v1/responses",
+            post(
+                |State(captured): State<Arc<Mutex<Vec<(String, String)>>>>, body: String| async move {
+                    captured
+                        .lock()
+                        .unwrap_or_else(|_| panic!("capture lock"))
+                        .push(("responses".to_owned(), body));
+                    "{\"id\":\"resp_mock\"}"
+                },
+            ),
+        )
+        .route(
+            "/v1/messages/count_tokens",
+            post(
+                |State(captured): State<Arc<Mutex<Vec<(String, String)>>>>, body: String| async move {
+                    captured
+                        .lock()
+                        .unwrap_or_else(|_| panic!("capture lock"))
+                        .push(("count_tokens".to_owned(), body));
+                    "{\"input_tokens\":1}"
+                },
+            ),
+        )
+        .with_state(captured.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap_or_else(|error| panic!("mock bind: {error}"));
+    let address = listener
+        .local_addr()
+        .unwrap_or_else(|error| panic!("mock address: {error}"));
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, mock).await;
+    });
+    let openai_id = Uuid::new_v4();
+    let anthropic_id = Uuid::new_v4();
+    let state = GatewayState::new([
+        RuntimeProfile::new(
+            openai_id,
+            GatewayProtocol::OpenAi,
+            "local-responses-key".to_owned(),
+            format!("http://{address}"),
+            SecretString::from("upstream-key"),
+            [12; 32],
+        ),
+        RuntimeProfile::new(
+            anthropic_id,
+            GatewayProtocol::Anthropic,
+            "local-count-key".to_owned(),
+            format!("http://{address}"),
+            SecretString::from("upstream-key"),
+            [13; 32],
+        ),
+    ])
+    .unwrap_or_else(|error| panic!("gateway state: {error}"));
+
+    let response = gateway_router(state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/responses")
+                .header(header::AUTHORIZATION, "Bearer local-responses-key")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(
+                    "{\"model\":\"test\",\"input\":\"responses-canary@example.test\"}",
+                ))
+                .unwrap_or_else(|error| panic!("request: {error}")),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("gateway response: {error}"));
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = gateway_router(state)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages/count_tokens")
+                .header("x-api-key", "local-count-key")
+                .header("anthropic-version", "2023-06-01")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(
+                    "{\"model\":\"test\",\"messages\":[{\"role\":\"user\",\"content\":\"count-canary@example.test\"}]}",
+                ))
+                .unwrap_or_else(|error| panic!("request: {error}")),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("gateway response: {error}"));
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let captured = captured.lock().unwrap_or_else(|_| panic!("capture lock"));
+    assert_eq!(captured.len(), 2);
+    assert!(
+        captured
+            .iter()
+            .all(|(_, body)| !body.contains("responses-canary@example.test")
+                && !body.contains("count-canary@example.test"))
+    );
+}
