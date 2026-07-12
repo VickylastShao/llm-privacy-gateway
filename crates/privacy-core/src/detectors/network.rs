@@ -58,6 +58,13 @@ impl Detector for NetworkDetector {
         }
 
         for matched in hostname_regex().find_iter(text) {
+            let followed_by_hostname_character = text
+                .get(matched.end()..)
+                .and_then(|remainder| remainder.chars().next())
+                .is_some_and(|character| character.is_ascii_alphanumeric() || character == '-');
+            if followed_by_hostname_character {
+                continue;
+            }
             add_detection(
                 &mut detections,
                 EntityKind::InternalHostname,

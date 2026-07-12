@@ -1,0 +1,7 @@
+{"id":"network-email","text":"email qa@example.test","expected":[{"kind":"Email","start":6,"end":21}]}
+{"id":"network-ipv4","text":"ip 192.168.1.44","expected":[{"kind":"Ipv4","start":3,"end":15}]}
+{"id":"network-ipv6","text":"ip 2001:db8::7","expected":[{"kind":"Ipv6","start":3,"end":14}]}
+{"id":"network-mac","text":"mac 00:1A:2B:3C:4D:5E","expected":[{"kind":"MacAddress","start":4,"end":21}]}
+{"id":"network-host","text":"host api.service.internal","expected":[{"kind":"InternalHostname","start":5,"end":25}]}
+{"id":"network-coordinate","text":"coord 31.2304, 121.4737","expected":[{"kind":"Coordinate","start":6,"end":23}]}
+{"id":"network-negative","text":"www.example.com and coord 91.0, 181.0","expected":[]}

@@ -134,7 +134,11 @@ fn uscc_requires_official_alphabet_and_checksum_without_losing_original_offsets(
         "unified_social_credit_code",
         "91350211m000100y46",
     );
-    for text in ["91350211M000100Y45", "91350211I000100Y46"] {
+    for text in [
+        "91350211M000100Y43",
+        "91350211M000100Y45",
+        "91350211I000100Y46",
+    ] {
         assert_empty(&detector, text);
     }
 }
@@ -200,6 +204,8 @@ fn network_detector_validates_addresses_internal_hosts_macs_and_bounded_coordina
     for text in [
         "www.example.com",
         "host api.example.com",
+        "host api.service.internality",
+        "host api.corporate",
         "ip 999.1.1.1",
         "mac 00:1A:2B:3C:4D:5G",
         "coord 91.0, 121.0",
@@ -228,6 +234,7 @@ fn fixture_detectors(id: &str) -> Vec<Box<dyn Detector>> {
         "credentials" => vec![Box::new(CredentialsDetector)],
         "china" => vec![Box::new(ChinaIdDetector)],
         "uscc" => vec![Box::new(UnifiedSocialCreditCodeDetector)],
+        "bank" => vec![Box::new(BankCardDetector)],
         "network" => vec![Box::new(NetworkDetector)],
         "benign" => vec![
             Box::new(CredentialsDetector),
@@ -243,11 +250,17 @@ fn fixture_detectors(id: &str) -> Vec<Box<dyn Detector>> {
 fn fixture_kind(kind: &str) -> EntityKind {
     match kind {
         "ApiKey" => EntityKind::ApiKey,
+        "BankCard" => EntityKind::BankCard,
         "ConnectionString" => EntityKind::ConnectionString,
         "ChinaResidentId" => EntityKind::ChinaResidentId,
         "Email" => EntityKind::Email,
+        "Ipv4" => EntityKind::Ipv4,
+        "Ipv6" => EntityKind::Ipv6,
         "Jwt" => EntityKind::Jwt,
+        "MacAddress" => EntityKind::MacAddress,
         "PrivateKey" => EntityKind::PrivateKey,
+        "InternalHostname" => EntityKind::InternalHostname,
+        "Coordinate" => EntityKind::Coordinate,
         "UnifiedSocialCreditCode" => EntityKind::UnifiedSocialCreditCode,
         other => panic!("unknown fixture kind: {other}"),
     }
@@ -259,6 +272,8 @@ fn evaluation_fixtures_have_correct_offsets_and_detector_results() {
     for filename in [
         "credentials.jsonl",
         "china-identifiers.jsonl",
+        "bank-cards.jsonl",
+        "network-identifiers.jsonl",
         "benign-lookalikes.jsonl",
     ] {
         let contents = match fs::read_to_string(format!("{root}/{filename}")) {
