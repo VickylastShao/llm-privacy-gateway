@@ -935,11 +935,14 @@ name = "lpg-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "gateway",
  "privacy-core",
+ "secrecy",
  "serde",
  "serde_json",
  "session-map",
  "tempfile",
+ "tokio",
  "uuid",
 ]
 
