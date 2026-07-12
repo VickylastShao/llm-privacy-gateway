@@ -72,7 +72,6 @@ struct GatewayControl {
     running: Option<RunningGateway>,
 }
 
-#[derive(Default)]
 struct DesktopState {
     gateway: Arc<Mutex<GatewayControl>>,
     profiles: Arc<Mutex<Vec<DesktopProfile>>>,
@@ -405,6 +404,27 @@ fn rotate_local_key(
             SecretString::from(profile.local_key.clone()),
         )
         .map_err(|_| "credential storage failed")?;
+    let protocol = match protocol_from_str(&profile.summary.protocol)? {
+        GatewayProtocol::OpenAi => Protocol::OpenAi,
+        GatewayProtocol::Anthropic => Protocol::Anthropic,
+    };
+    let (_, upstream_secret_ref) = service_account(SecretKind::Upstream, profile.id);
+    let (_, local_secret_ref) = service_account(SecretKind::Local, profile.id);
+    state
+        .repository
+        .lock()
+        .map_err(|_| "profile database unavailable")?
+        .save_profile(&ProfileInput {
+            id: profile.id,
+            name: profile.summary.name.clone(),
+            protocol,
+            upstream_url: profile.summary.upstream_url.clone(),
+            upstream_secret_ref,
+            local_secret_ref,
+            local_key_digest: local_key_digest(&profile.local_key),
+            policy: profile.summary.policy.clone(),
+        })
+        .map_err(|_| "profile persistence failed")?;
     Ok(serde_json::json!({"profile_id": id, "local_key": profile.local_key}))
 }
 
