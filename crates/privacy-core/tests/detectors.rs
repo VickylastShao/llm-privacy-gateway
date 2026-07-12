@@ -215,6 +215,11 @@ fn network_detector_validates_addresses_internal_hosts_macs_and_bounded_coordina
     }
 }
 
+#[test]
+fn internal_hostname_suffix_must_end_the_hostname() {
+    assert_empty(&NetworkDetector, "api.service.internal.example.com");
+}
+
 #[derive(Debug, Deserialize)]
 struct Fixture {
     id: String,

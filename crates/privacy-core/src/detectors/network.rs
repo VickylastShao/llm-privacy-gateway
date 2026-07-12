@@ -61,7 +61,9 @@ impl Detector for NetworkDetector {
             let followed_by_hostname_character = text
                 .get(matched.end()..)
                 .and_then(|remainder| remainder.chars().next())
-                .is_some_and(|character| character.is_ascii_alphanumeric() || character == '-');
+                .is_some_and(|character| {
+                    character.is_ascii_alphanumeric() || character == '-' || character == '.'
+                });
             if followed_by_hostname_character {
                 continue;
             }
