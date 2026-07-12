@@ -1,4 +1,4 @@
-use protocol_openai::{SseDecoder, StreamRestorer, restore_openai_sse};
+use protocol_openai::{OpenAiSseTransformer, SseDecoder, StreamRestorer, restore_openai_sse};
 use session_map::{MemoryBackend, PseudonymMap};
 use uuid::Uuid;
 
@@ -58,4 +58,32 @@ fn openai_sse_restores_placeholder_split_across_delta_events() {
     assert!(output.contains("Contact "));
     assert!(output.contains("alice@example.test now"));
     assert!(!output.contains(&token));
+}
+
+#[test]
+fn transformer_accepts_every_utf8_byte_split() {
+    let mut map = PseudonymMap::new(Uuid::nil(), [9; 32], MemoryBackend::default());
+    let token = map
+        .pseudonymize("email", "alice@example.test")
+        .unwrap_or_else(|error| panic!("map: {error}"));
+    let source =
+        format!("data: {{\"choices\":[{{\"delta\":{{\"content\":\"你好 {token}\"}}}}]}}\n\n");
+    for split in 0..=source.len() {
+        let mut transformer = OpenAiSseTransformer::default();
+        let mut output = transformer
+            .push_bytes(&source.as_bytes()[..split], &map)
+            .unwrap_or_else(|error| panic!("first split: {error}"));
+        output.extend(
+            transformer
+                .push_bytes(&source.as_bytes()[split..], &map)
+                .unwrap_or_else(|error| panic!("second split: {error}")),
+        );
+        output.extend(
+            transformer
+                .finish()
+                .unwrap_or_else(|error| panic!("finish: {error}")),
+        );
+        let text = String::from_utf8(output).unwrap_or_else(|error| panic!("UTF-8: {error}"));
+        assert!(text.contains("你好 alice@example.test"), "split {split}");
+    }
 }

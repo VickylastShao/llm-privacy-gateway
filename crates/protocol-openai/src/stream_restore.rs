@@ -10,6 +10,52 @@ pub struct StreamRestorer {
     pending: String,
 }
 
+#[derive(Debug, Default)]
+pub struct OpenAiSseTransformer {
+    decoder: SseDecoder,
+    restorer: StreamRestorer,
+    utf8_tail: Vec<u8>,
+}
+
+impl OpenAiSseTransformer {
+    pub fn push_bytes<B: MappingBackend>(
+        &mut self,
+        bytes: &[u8],
+        map: &PseudonymMap<B>,
+    ) -> Result<Vec<u8>, OpenAiProtocolError> {
+        self.utf8_tail.extend_from_slice(bytes);
+        let text = match std::str::from_utf8(&self.utf8_tail) {
+            Ok(text) => {
+                let owned = text.to_owned();
+                self.utf8_tail.clear();
+                owned
+            }
+            Err(error) if error.error_len().is_none() => {
+                let valid = std::str::from_utf8(&self.utf8_tail[..error.valid_up_to()])
+                    .map_err(|_| OpenAiProtocolError::InvalidSseJson)?
+                    .to_owned();
+                let tail = self.utf8_tail[error.valid_up_to()..].to_vec();
+                self.utf8_tail = tail;
+                valid
+            }
+            Err(_) => return Err(OpenAiProtocolError::InvalidSseJson),
+        };
+        let events = self.decoder.push(&text)?;
+        let mut output = String::new();
+        for event in events {
+            output.push_str(&transform_event(event, &mut self.restorer, map)?);
+        }
+        Ok(output.into_bytes())
+    }
+
+    pub fn finish(&mut self) -> Result<Vec<u8>, OpenAiProtocolError> {
+        if !self.utf8_tail.is_empty() || !std::mem::take(&mut self.restorer).finish().is_empty() {
+            return Err(OpenAiProtocolError::IncompletePlaceholder);
+        }
+        Ok(Vec::new())
+    }
+}
+
 impl StreamRestorer {
     pub fn push<B: MappingBackend>(
         &mut self,
@@ -61,28 +107,36 @@ pub fn restore_openai_sse<B: MappingBackend>(
     let mut restorer = StreamRestorer::default();
     let mut output = String::new();
     for event in events {
-        if event.data == "[DONE]" {
-            output.push_str("data: [DONE]\n\n");
-            continue;
-        }
-        let mut value: Value =
-            serde_json::from_str(&event.data).map_err(|_| OpenAiProtocolError::InvalidSseJson)?;
-        restore_event_text(&mut value, &mut restorer, map)?;
-        if let Some(name) = event.event {
-            output.push_str("event: ");
-            output.push_str(&name);
-            output.push('\n');
-        }
-        output.push_str("data: ");
-        output.push_str(
-            &serde_json::to_string(&value).map_err(|_| OpenAiProtocolError::InvalidSseJson)?,
-        );
-        output.push_str("\n\n");
+        output.push_str(&transform_event(event, &mut restorer, map)?);
     }
     let tail = restorer.finish();
     if !tail.is_empty() {
         return Err(OpenAiProtocolError::IncompletePlaceholder);
     }
+    Ok(output)
+}
+
+fn transform_event<B: MappingBackend>(
+    event: crate::SseEvent,
+    restorer: &mut StreamRestorer,
+    map: &PseudonymMap<B>,
+) -> Result<String, OpenAiProtocolError> {
+    if event.data == "[DONE]" {
+        return Ok("data: [DONE]\n\n".to_owned());
+    }
+    let mut value: Value =
+        serde_json::from_str(&event.data).map_err(|_| OpenAiProtocolError::InvalidSseJson)?;
+    restore_event_text(&mut value, restorer, map)?;
+    let mut output = String::new();
+    if let Some(name) = event.event {
+        output.push_str("event: ");
+        output.push_str(&name);
+        output.push('\n');
+    }
+    output.push_str("data: ");
+    output
+        .push_str(&serde_json::to_string(&value).map_err(|_| OpenAiProtocolError::InvalidSseJson)?);
+    output.push_str("\n\n");
     Ok(output)
 }
 
