@@ -10,4 +10,10 @@ pub enum GatewayError {
     ProtocolMismatch,
     #[error("gateway listener failed")]
     Listener,
+    #[error("request body is invalid JSON")]
+    InvalidJson,
+    #[error("privacy transformation blocked the request")]
+    Blocked,
+    #[error("upstream request failed")]
+    Upstream,
 }

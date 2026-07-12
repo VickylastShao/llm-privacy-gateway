@@ -7,8 +7,15 @@ rust-version.workspace = true
 
 [dependencies]
 axum.workspace = true
+bytes.workspace = true
 http.workspace = true
+privacy-core = { path = "../privacy-core" }
+protocol-anthropic = { path = "../protocol-anthropic" }
+protocol-openai = { path = "../protocol-openai" }
 reqwest.workspace = true
+secrecy.workspace = true
+serde_json.workspace = true
+session-map = { path = "../session-map" }
 sha2.workspace = true
 subtle.workspace = true
 thiserror.workspace = true

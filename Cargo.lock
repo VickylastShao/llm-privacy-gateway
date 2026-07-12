@@ -504,9 +504,16 @@ name = "gateway"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "bytes",
  "http",
  "http-body-util",
+ "privacy-core",
+ "protocol-anthropic",
+ "protocol-openai",
  "reqwest",
+ "secrecy",
+ "serde_json",
+ "session-map",
  "sha2",
  "subtle",
  "thiserror",
