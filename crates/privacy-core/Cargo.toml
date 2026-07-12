@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+aho-corasick.workspace = true
 chrono.workspace = true
 regex.workspace = true
 thiserror.workspace = true

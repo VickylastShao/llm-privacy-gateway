@@ -92,4 +92,10 @@ pub enum PrivacyError {
     InvalidRange { start: usize, end: usize },
     #[error("invalid detection confidence: {confidence} exceeds 100")]
     InvalidConfidence { confidence: u8 },
+    #[error("dictionary terms must not be empty")]
+    EmptyDictionaryTerm,
+    #[error("dictionary matcher could not be constructed")]
+    DictionaryBuild,
+    #[error("detection range does not align with the inspected text")]
+    InvalidTextRange,
 }
