@@ -142,7 +142,7 @@ fn has_mac_neighbor(text: &str, start: usize, end: usize) -> bool {
 }
 
 fn is_mac_character(byte: &u8) -> bool {
-    byte.is_ascii_hexdigit() || matches!(*byte, b':' | b'-')
+    byte.is_ascii_alphanumeric() || matches!(*byte, b':' | b'-')
 }
 
 fn hostname_regex() -> &'static Regex {

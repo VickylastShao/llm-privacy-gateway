@@ -272,6 +272,16 @@ fn mac_address_rejects_hyphen_neighbors() {
     }
 }
 
+#[test]
+fn mac_address_rejects_left_ascii_letter_neighbor() {
+    assert_empty(&NetworkDetector, "Z00:1A:2B:3C:4D:5E");
+}
+
+#[test]
+fn mac_address_rejects_right_ascii_letter_neighbor() {
+    assert_empty(&NetworkDetector, "00:1A:2B:3C:4D:5EZ");
+}
+
 #[derive(Debug, Deserialize)]
 struct Fixture {
     id: String,
