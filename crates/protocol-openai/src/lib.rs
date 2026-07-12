@@ -2,12 +2,14 @@
 
 mod chat;
 mod error;
+mod response;
 mod responses;
 mod sse;
 mod stream_restore;
 
 pub use chat::transform_chat_request;
 pub use error::OpenAiProtocolError;
+pub use response::{restore_chat_response, restore_responses_response};
 pub use responses::transform_responses_request;
 pub use sse::{SseDecoder, SseEvent};
 pub use stream_restore::OpenAiSseTransformer;

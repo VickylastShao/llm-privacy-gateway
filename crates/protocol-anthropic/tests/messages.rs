@@ -1,5 +1,7 @@
 use privacy_core::{Policy, PrivacyEngine, StaticDictionary};
-use protocol_anthropic::{transform_messages_request, transform_messages_request_raw};
+use protocol_anthropic::{
+    restore_messages_response_raw, transform_messages_request, transform_messages_request_raw,
+};
 use serde_json::json;
 use session_map::{MemoryBackend, PseudonymMap};
 use uuid::Uuid;
@@ -47,4 +49,21 @@ fn raw_adapter_keeps_signed_thinking_block_bytes_while_transforming_tool_result(
 
     assert!(output.contains(signed));
     assert!(!output.contains("\"content\":\"Alpha Project\""));
+}
+
+#[test]
+fn raw_response_adapter_restores_text_and_keeps_signed_thinking_bytes() {
+    let mut map = PseudonymMap::new(Uuid::nil(), [18; 32], MemoryBackend::default());
+    let token = map
+        .pseudonymize("email", "alice@example.test")
+        .unwrap_or_else(|error| panic!("map: {error}"));
+    let signed = r#"{ "type" : "thinking", "thinking" : "opaque", "signature" : "sig==" }"#;
+    let response = format!(r#"{{"content":[{signed},{{"type":"text","text":"{token}"}}]}}"#);
+
+    let output = restore_messages_response_raw(&response, &map)
+        .unwrap_or_else(|error| panic!("restore: {error}"));
+
+    assert!(output.contains(signed));
+    assert!(output.contains("alice@example.test"));
+    assert!(!output.contains(&token));
 }

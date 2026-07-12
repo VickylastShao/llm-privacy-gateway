@@ -14,6 +14,8 @@ use std::sync::{Arc, Mutex};
 use tower::ServiceExt;
 use uuid::Uuid;
 
+type Captures = Arc<Mutex<Vec<(String, String)>>>;
+
 fn local_state() -> std::sync::Arc<GatewayState> {
     GatewayState::new([RuntimeProfile::new(
         Uuid::nil(),
@@ -163,7 +165,7 @@ async fn transformed_canary_never_reaches_mock_upstream_in_plaintext() {
         Uuid::nil(),
         GatewayProtocol::OpenAi,
         "local-test-key".to_owned(),
-        format!("http://{address}"),
+        format!("http://{address}/v1"),
         SecretString::from("upstream-key"),
         [4; 32],
     );
@@ -211,7 +213,7 @@ async fn openai_sse_response_restores_pseudonyms_before_returning_to_client() {
         Uuid::nil(),
         GatewayProtocol::OpenAi,
         "local-sse-key".to_owned(),
-        format!("http://{address}"),
+        format!("http://{address}/v1"),
         SecretString::from("upstream-key"),
         [9; 32],
     );
@@ -356,12 +358,12 @@ async fn anthropic_gateway_forwards_signed_thinking_blocks_as_raw_json() {
 
 #[tokio::test]
 async fn responses_and_count_tokens_do_not_forward_plaintext_canaries() {
-    let captured = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+    let captured: Captures = Arc::new(Mutex::new(Vec::new()));
     let mock = axum::Router::new()
         .route(
             "/v1/responses",
             post(
-                |State(captured): State<Arc<Mutex<Vec<(String, String)>>>>, body: String| async move {
+                |State(captured): State<Captures>, body: String| async move {
                     captured
                         .lock()
                         .unwrap_or_else(|_| panic!("capture lock"))
@@ -373,7 +375,7 @@ async fn responses_and_count_tokens_do_not_forward_plaintext_canaries() {
         .route(
             "/v1/messages/count_tokens",
             post(
-                |State(captured): State<Arc<Mutex<Vec<(String, String)>>>>, body: String| async move {
+                |State(captured): State<Captures>, body: String| async move {
                     captured
                         .lock()
                         .unwrap_or_else(|_| panic!("capture lock"))
@@ -399,7 +401,7 @@ async fn responses_and_count_tokens_do_not_forward_plaintext_canaries() {
             openai_id,
             GatewayProtocol::OpenAi,
             "local-responses-key".to_owned(),
-            format!("http://{address}"),
+            format!("http://{address}/v1"),
             SecretString::from("upstream-key"),
             [12; 32],
         ),
@@ -455,4 +457,145 @@ async fn responses_and_count_tokens_do_not_forward_plaintext_canaries() {
             .all(|(_, body)| !body.contains("responses-canary@example.test")
                 && !body.contains("count-canary@example.test"))
     );
+}
+
+#[tokio::test]
+async fn openai_upstream_base_url_is_used_without_injecting_a_v1_prefix() {
+    let mock = axum::Router::new().route(
+        "/compat/chat/completions",
+        post(|| async { "{\"id\":\"mock\"}" }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap_or_else(|error| panic!("mock bind: {error}"));
+    let address = listener
+        .local_addr()
+        .unwrap_or_else(|error| panic!("mock address: {error}"));
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, mock).await;
+    });
+    let profile = RuntimeProfile::new(
+        Uuid::nil(),
+        GatewayProtocol::OpenAi,
+        "local-base-url-key".to_owned(),
+        format!("http://{address}/compat"),
+        SecretString::from("upstream-key"),
+        [14; 32],
+    );
+    let state =
+        GatewayState::new([profile]).unwrap_or_else(|error| panic!("gateway state: {error}"));
+    let response = gateway_router(state)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header(header::AUTHORIZATION, "Bearer local-base-url-key")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(
+                    "{\"model\":\"test\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}",
+                ))
+                .unwrap_or_else(|error| panic!("request: {error}")),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("gateway response: {error}"));
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn openai_json_response_restores_pseudonyms_before_returning_to_client() {
+    let mock = axum::Router::new().route(
+        "/v1/chat/completions",
+        post(|body: String| async move {
+            let token = serde_json::from_str::<serde_json::Value>(&body)
+                .unwrap_or_else(|error| panic!("mock JSON: {error}"))["messages"][0]["content"]
+                .as_str()
+                .unwrap_or_else(|| panic!("content must be string"))
+                .to_owned();
+            serde_json::json!({
+                "choices": [{"message": {"content": token, "reasoning_content": "ok"}}]
+            })
+            .to_string()
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap_or_else(|error| panic!("mock bind: {error}"));
+    let address = listener
+        .local_addr()
+        .unwrap_or_else(|error| panic!("mock address: {error}"));
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, mock).await;
+    });
+    let profile = RuntimeProfile::new(
+        Uuid::nil(),
+        GatewayProtocol::OpenAi,
+        "local-json-key".to_owned(),
+        format!("http://{address}/v1"),
+        SecretString::from("upstream-key"),
+        [16; 32],
+    );
+    let state =
+        GatewayState::new([profile]).unwrap_or_else(|error| panic!("gateway state: {error}"));
+    let response = gateway_router(state)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header(header::AUTHORIZATION, "Bearer local-json-key")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(
+                    "{\"model\":\"test\",\"messages\":[{\"role\":\"user\",\"content\":\"alice@example.test\"}]}",
+                ))
+                .unwrap_or_else(|error| panic!("request: {error}")),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("gateway response: {error}"));
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .unwrap_or_else(|error| panic!("body: {error}"))
+        .to_bytes();
+    let body = String::from_utf8(body.to_vec()).unwrap_or_else(|error| panic!("UTF-8: {error}"));
+    assert!(body.contains("alice@example.test"));
+    assert!(!body.contains("__LPG_"));
+}
+
+#[tokio::test]
+async fn models_route_authenticates_locally_and_uses_the_configured_openai_base_url() {
+    let mock = axum::Router::new().route(
+        "/compat/models",
+        axum::routing::get(|| async { "{\"object\":\"list\",\"data\":[]}" }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap_or_else(|error| panic!("mock bind: {error}"));
+    let address = listener
+        .local_addr()
+        .unwrap_or_else(|error| panic!("mock address: {error}"));
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, mock).await;
+    });
+    let profile = RuntimeProfile::new(
+        Uuid::nil(),
+        GatewayProtocol::OpenAi,
+        "local-models-key".to_owned(),
+        format!("http://{address}/compat"),
+        SecretString::from("upstream-key"),
+        [19; 32],
+    );
+    let state =
+        GatewayState::new([profile]).unwrap_or_else(|error| panic!("gateway state: {error}"));
+    let response = gateway_router(state)
+        .oneshot(
+            Request::builder()
+                .uri("/v1/models")
+                .header(header::AUTHORIZATION, "Bearer local-models-key")
+                .body(axum::body::Body::empty())
+                .unwrap_or_else(|error| panic!("request: {error}")),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("gateway response: {error}"));
+    assert_eq!(response.status(), StatusCode::OK);
 }

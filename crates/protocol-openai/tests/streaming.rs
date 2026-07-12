@@ -97,3 +97,23 @@ fn transformer_fails_closed_on_an_unterminated_event() {
         .unwrap_or_else(|error| panic!("partial event: {error}"));
     assert!(transformer.finish().is_err());
 }
+
+#[test]
+fn restores_provider_reasoning_content_without_emitting_partial_placeholders() {
+    let mut map = PseudonymMap::new(Uuid::nil(), [17; 32], MemoryBackend::default());
+    let token = map
+        .pseudonymize("email", "alice@example.test")
+        .unwrap_or_else(|error| panic!("map: {error}"));
+    let split = token.len() / 2;
+    let source = format!(
+        "data: {{\"choices\":[{{\"delta\":{{\"reasoning_content\":\"{}\"}}}}]}}\n\ndata: {{\"choices\":[{{\"delta\":{{\"reasoning_content\":\"{}\"}}}}]}}\n\n",
+        &token[..split],
+        &token[split..]
+    );
+
+    let output =
+        restore_openai_sse(&source, &map).unwrap_or_else(|error| panic!("restore: {error}"));
+
+    assert!(output.contains("alice@example.test"));
+    assert!(!output.contains("__LPG_"));
+}

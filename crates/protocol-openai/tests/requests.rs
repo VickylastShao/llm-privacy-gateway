@@ -1,5 +1,5 @@
 use privacy_core::{Policy, PrivacyEngine, StaticDictionary};
-use protocol_openai::{transform_chat_request, transform_responses_request};
+use protocol_openai::{restore_chat_response, transform_chat_request, transform_responses_request};
 use serde_json::json;
 use session_map::{MemoryBackend, PseudonymMap};
 use uuid::Uuid;
@@ -55,4 +55,31 @@ fn responses_preserves_ids_and_encrypted_reasoning() {
     );
     assert_eq!(request["input"][1]["call_id"], "Alpha Project");
     assert_eq!(request["reasoning"]["encrypted_content"], "Alpha Project");
+}
+
+#[test]
+fn chat_response_restores_message_and_reasoning_text() {
+    let mut map = PseudonymMap::new(Uuid::nil(), [15; 32], MemoryBackend::default());
+    let token = map
+        .pseudonymize("email", "alice@example.test")
+        .unwrap_or_else(|error| panic!("map: {error}"));
+    let mut response = json!({
+        "choices": [{
+            "message": {
+                "content": token,
+                "reasoning_content": format!("repeat {token}")
+            }
+        }]
+    });
+
+    restore_chat_response(&mut response, &map).unwrap_or_else(|error| panic!("restore: {error}"));
+
+    assert_eq!(
+        response["choices"][0]["message"]["content"],
+        "alice@example.test"
+    );
+    assert_eq!(
+        response["choices"][0]["message"]["reasoning_content"],
+        "repeat alice@example.test"
+    );
 }

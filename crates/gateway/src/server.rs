@@ -30,6 +30,7 @@ pub fn gateway_router(state: Arc<GatewayState>) -> Router {
         .route("/v1/responses", post(openai_responses))
         .route("/v1/messages", post(anthropic_messages))
         .route("/v1/messages/count_tokens", post(anthropic_count_tokens))
+        .route("/v1/models", get(models))
         .with_state(state)
         .layer(
             ServiceBuilder::new()
@@ -77,7 +78,8 @@ async fn openai_chat(
     forward(
         state,
         GatewayProtocol::OpenAi,
-        "/v1/chat/completions",
+        ResponseAdapter::OpenAiChat,
+        "/chat/completions",
         headers,
         body,
         |body, state, profile| {
@@ -102,7 +104,8 @@ async fn openai_responses(
     forward(
         state,
         GatewayProtocol::OpenAi,
-        "/v1/responses",
+        ResponseAdapter::OpenAiResponses,
+        "/responses",
         headers,
         body,
         |body, state, profile| {
@@ -127,6 +130,7 @@ async fn anthropic_messages(
     forward(
         state,
         GatewayProtocol::Anthropic,
+        ResponseAdapter::AnthropicMessages,
         "/v1/messages",
         headers,
         body,
@@ -155,6 +159,7 @@ async fn anthropic_count_tokens(
     forward(
         state,
         GatewayProtocol::Anthropic,
+        ResponseAdapter::None,
         "/v1/messages/count_tokens",
         headers,
         body,
@@ -176,6 +181,67 @@ async fn anthropic_count_tokens(
     .await
 }
 
+async fn models(State(state): State<Arc<GatewayState>>, headers: HeaderMap) -> Response {
+    let auth_profiles = state.auth_profiles();
+    let protocol = [GatewayProtocol::OpenAi, GatewayProtocol::Anthropic]
+        .into_iter()
+        .find_map(|protocol| {
+            authenticate(&headers, protocol, &auth_profiles)
+                .ok()
+                .map(|id| (protocol, id))
+        });
+    let Some((protocol, profile_id)) = protocol else {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    };
+    let Some(profile) = state.profiles.get(&profile_id) else {
+        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    };
+    let path = match protocol {
+        GatewayProtocol::OpenAi => "/models",
+        GatewayProtocol::Anthropic => "/v1/models",
+    };
+    let url = format!(
+        "{}{}",
+        profile.upstream_base_url.trim_end_matches('/'),
+        path
+    );
+    let request = match protocol {
+        GatewayProtocol::OpenAi => state
+            .client
+            .get(url)
+            .bearer_auth(profile.upstream_key.expose_secret()),
+        GatewayProtocol::Anthropic => state
+            .client
+            .get(url)
+            .header("x-api-key", profile.upstream_key.expose_secret())
+            .header(
+                "anthropic-version",
+                headers
+                    .get("anthropic-version")
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or("2023-06-01"),
+            ),
+    };
+    match request.send().await {
+        Ok(response) => {
+            let status = response.status();
+            let content_type = response.headers().get("content-type").cloned();
+            match response.bytes().await {
+                Ok(bytes) => {
+                    let mut result = Response::new(Body::from(bytes));
+                    *result.status_mut() = status;
+                    if let Some(content_type) = content_type {
+                        result.headers_mut().insert("content-type", content_type);
+                    }
+                    result
+                }
+                Err(_) => (StatusCode::BAD_GATEWAY, "upstream response failed").into_response(),
+            }
+        }
+        Err(_) => (StatusCode::BAD_GATEWAY, "upstream request failed").into_response(),
+    }
+}
+
 enum OutboundBody {
     Json(serde_json::Value),
     Raw(String),
@@ -186,9 +252,18 @@ enum ForwardError {
     Blocked,
 }
 
+#[derive(Clone, Copy)]
+enum ResponseAdapter {
+    None,
+    OpenAiChat,
+    OpenAiResponses,
+    AnthropicMessages,
+}
+
 async fn forward<F>(
     state: Arc<GatewayState>,
     protocol: GatewayProtocol,
+    response_adapter: ResponseAdapter,
     path: &str,
     headers: HeaderMap,
     body: Bytes,
@@ -328,6 +403,72 @@ where
             }
             match response.bytes().await {
                 Ok(mut bytes) => {
+                    if matches!(
+                        response_adapter,
+                        ResponseAdapter::OpenAiChat | ResponseAdapter::OpenAiResponses
+                    ) {
+                        let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&bytes)
+                        else {
+                            let mut result = Response::new(Body::from(bytes));
+                            *result.status_mut() = status;
+                            if let Some(content_type) = content_type {
+                                result.headers_mut().insert("content-type", content_type);
+                            }
+                            return result;
+                        };
+                        let Ok(mapping) = profile.mappings.lock() else {
+                            return (StatusCode::INTERNAL_SERVER_ERROR, "mapping unavailable")
+                                .into_response();
+                        };
+                        let restored = match response_adapter {
+                            ResponseAdapter::OpenAiChat => {
+                                protocol_openai::restore_chat_response(&mut value, &mapping)
+                            }
+                            ResponseAdapter::OpenAiResponses => {
+                                protocol_openai::restore_responses_response(&mut value, &mapping)
+                            }
+                            ResponseAdapter::None | ResponseAdapter::AnthropicMessages => Ok(()),
+                        };
+                        if restored.is_err() {
+                            return (
+                                StatusCode::BAD_GATEWAY,
+                                "upstream response restoration failed",
+                            )
+                                .into_response();
+                        }
+                        let Ok(serialized) = serde_json::to_vec(&value) else {
+                            return (
+                                StatusCode::BAD_GATEWAY,
+                                "upstream response restoration failed",
+                            )
+                                .into_response();
+                        };
+                        bytes = Bytes::from(serialized);
+                    }
+                    if matches!(response_adapter, ResponseAdapter::AnthropicMessages) {
+                        let Ok(body) = std::str::from_utf8(&bytes) else {
+                            let mut result = Response::new(Body::from(bytes));
+                            *result.status_mut() = status;
+                            if let Some(content_type) = content_type {
+                                result.headers_mut().insert("content-type", content_type);
+                            }
+                            return result;
+                        };
+                        let Ok(mapping) = profile.mappings.lock() else {
+                            return (StatusCode::INTERNAL_SERVER_ERROR, "mapping unavailable")
+                                .into_response();
+                        };
+                        let Ok(restored) =
+                            protocol_anthropic::restore_messages_response_raw(body, &mapping)
+                        else {
+                            return (
+                                StatusCode::BAD_GATEWAY,
+                                "upstream response restoration failed",
+                            )
+                                .into_response();
+                        };
+                        bytes = Bytes::from(restored);
+                    }
                     if is_sse && protocol == GatewayProtocol::Anthropic {
                         let Ok(text) = std::str::from_utf8(&bytes) else {
                             return (StatusCode::BAD_GATEWAY, "invalid upstream SSE")

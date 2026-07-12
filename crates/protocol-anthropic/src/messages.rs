@@ -1,6 +1,6 @@
 use privacy_core::{Policy, PrivacyEngine};
 use serde_json::{Value, value::RawValue};
-use session_map::Pseudonymizer;
+use session_map::{MappingBackend, PseudonymMap, Pseudonymizer};
 use std::collections::BTreeMap;
 use thiserror::Error;
 
@@ -44,6 +44,28 @@ pub fn transform_messages_request_raw<P: Pseudonymizer>(
         );
     }
     serde_json::to_string(&request).map_err(|_| AnthropicProtocolError::Json)
+}
+
+/// Restores pseudonyms in response text blocks while leaving signed thinking blocks untouched.
+pub fn restore_messages_response_raw<B: MappingBackend>(
+    input: &str,
+    map: &PseudonymMap<B>,
+) -> Result<String, AnthropicProtocolError> {
+    let mut response: BTreeMap<String, Box<RawValue>> =
+        serde_json::from_str(input).map_err(|_| AnthropicProtocolError::Json)?;
+    if let Some(content) = response.remove("content") {
+        let blocks: Vec<Box<RawValue>> =
+            serde_json::from_str(content.get()).map_err(|_| AnthropicProtocolError::Json)?;
+        let mut restored = Vec::with_capacity(blocks.len());
+        for block in blocks {
+            restored.push(restore_raw_response_block(block, map)?);
+        }
+        response.insert(
+            "content".to_owned(),
+            raw_value(serde_json::to_string(&restored).map_err(|_| AnthropicProtocolError::Json)?)?,
+        );
+    }
+    serde_json::to_string(&response).map_err(|_| AnthropicProtocolError::Json)
 }
 
 pub fn transform_messages_request<P: Pseudonymizer>(
@@ -155,6 +177,28 @@ fn transform_raw_block<P: Pseudonymizer>(
         // signatures are tied to the original serialized block rather than its JSON meaning.
         _ => return Ok(block),
     }
+    raw_value(serde_json::to_string(&value).map_err(|_| AnthropicProtocolError::Json)?)
+}
+
+fn restore_raw_response_block<B: MappingBackend>(
+    block: Box<RawValue>,
+    map: &PseudonymMap<B>,
+) -> Result<Box<RawValue>, AnthropicProtocolError> {
+    let mut value: Value =
+        serde_json::from_str(block.get()).map_err(|_| AnthropicProtocolError::Json)?;
+    if value.get("type").and_then(Value::as_str) != Some("text") {
+        return Ok(block);
+    }
+    let Some(field) = value.get_mut("text") else {
+        return raw_value(serde_json::to_string(&value).map_err(|_| AnthropicProtocolError::Json)?);
+    };
+    let Some(text) = field.as_str() else {
+        return raw_value(serde_json::to_string(&value).map_err(|_| AnthropicProtocolError::Json)?);
+    };
+    let restored = map
+        .restore_text(text)
+        .map_err(|_| AnthropicProtocolError::Privacy)?;
+    *field = Value::String(restored);
     raw_value(serde_json::to_string(&value).map_err(|_| AnthropicProtocolError::Json)?)
 }
 

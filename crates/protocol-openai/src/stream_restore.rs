@@ -13,8 +13,15 @@ pub struct StreamRestorer {
 #[derive(Debug, Default)]
 pub struct OpenAiSseTransformer {
     decoder: SseDecoder,
-    restorer: StreamRestorer,
+    restorers: EventRestorers,
     utf8_tail: Vec<u8>,
+}
+
+#[derive(Debug, Default)]
+struct EventRestorers {
+    content: StreamRestorer,
+    reasoning: StreamRestorer,
+    root_delta: StreamRestorer,
 }
 
 impl OpenAiSseTransformer {
@@ -43,14 +50,23 @@ impl OpenAiSseTransformer {
         let events = self.decoder.push(&text)?;
         let mut output = String::new();
         for event in events {
-            output.push_str(&transform_event(event, &mut self.restorer, map)?);
+            output.push_str(&transform_event(event, &mut self.restorers, map)?);
         }
         Ok(output.into_bytes())
     }
 
     pub fn finish(&mut self) -> Result<Vec<u8>, OpenAiProtocolError> {
         self.decoder.finish()?;
-        if !self.utf8_tail.is_empty() || !std::mem::take(&mut self.restorer).finish().is_empty() {
+        let EventRestorers {
+            content,
+            reasoning,
+            root_delta,
+        } = std::mem::take(&mut self.restorers);
+        if !self.utf8_tail.is_empty()
+            || !content.finish().is_empty()
+            || !reasoning.finish().is_empty()
+            || !root_delta.finish().is_empty()
+        {
             return Err(OpenAiProtocolError::IncompletePlaceholder);
         }
         Ok(Vec::new())
@@ -105,13 +121,15 @@ pub fn restore_openai_sse<B: MappingBackend>(
 ) -> Result<String, OpenAiProtocolError> {
     let mut decoder = SseDecoder::default();
     let events = decoder.push(input)?;
-    let mut restorer = StreamRestorer::default();
+    let mut restorers = EventRestorers::default();
     let mut output = String::new();
     for event in events {
-        output.push_str(&transform_event(event, &mut restorer, map)?);
+        output.push_str(&transform_event(event, &mut restorers, map)?);
     }
-    let tail = restorer.finish();
-    if !tail.is_empty() {
+    if !restorers.content.finish().is_empty()
+        || !restorers.reasoning.finish().is_empty()
+        || !restorers.root_delta.finish().is_empty()
+    {
         return Err(OpenAiProtocolError::IncompletePlaceholder);
     }
     Ok(output)
@@ -119,7 +137,7 @@ pub fn restore_openai_sse<B: MappingBackend>(
 
 fn transform_event<B: MappingBackend>(
     event: crate::SseEvent,
-    restorer: &mut StreamRestorer,
+    restorers: &mut EventRestorers,
     map: &PseudonymMap<B>,
 ) -> Result<String, OpenAiProtocolError> {
     if event.data == "[DONE]" {
@@ -127,7 +145,7 @@ fn transform_event<B: MappingBackend>(
     }
     let mut value: Value =
         serde_json::from_str(&event.data).map_err(|_| OpenAiProtocolError::InvalidSseJson)?;
-    restore_event_text(&mut value, restorer, map)?;
+    restore_event_text(&mut value, restorers, map)?;
     let mut output = String::new();
     if let Some(name) = event.event {
         output.push_str("event: ");
@@ -143,22 +161,14 @@ fn transform_event<B: MappingBackend>(
 
 fn restore_event_text<B: MappingBackend>(
     value: &mut Value,
-    restorer: &mut StreamRestorer,
+    restorers: &mut EventRestorers,
     map: &PseudonymMap<B>,
 ) -> Result<(), OpenAiProtocolError> {
     if let Some(choices) = value.get_mut("choices").and_then(Value::as_array_mut) {
         for choice in choices {
-            if let Some(content_value) = choice
-                .get_mut("delta")
-                .and_then(|delta| delta.get_mut("content"))
-            {
-                let Some(content) = content_value.as_str() else {
-                    continue;
-                };
-                let restored = restorer
-                    .push(content, map)
-                    .map_err(|_| OpenAiProtocolError::Privacy)?;
-                *content_value = Value::String(restored);
+            if let Some(delta) = choice.get_mut("delta") {
+                restore_delta_string(delta, "content", &mut restorers.content, map)?;
+                restore_delta_string(delta, "reasoning_content", &mut restorers.reasoning, map)?;
             }
         }
     }
@@ -166,10 +176,30 @@ fn restore_event_text<B: MappingBackend>(
         let Some(delta) = delta_value.as_str() else {
             return Ok(());
         };
-        let restored = restorer
+        let restored = restorers
+            .root_delta
             .push(delta, map)
             .map_err(|_| OpenAiProtocolError::Privacy)?;
         *delta_value = Value::String(restored);
     }
+    Ok(())
+}
+
+fn restore_delta_string<B: MappingBackend>(
+    delta: &mut Value,
+    key: &str,
+    restorer: &mut StreamRestorer,
+    map: &PseudonymMap<B>,
+) -> Result<(), OpenAiProtocolError> {
+    let Some(value) = delta.get_mut(key) else {
+        return Ok(());
+    };
+    let Some(text) = value.as_str() else {
+        return Ok(());
+    };
+    let restored = restorer
+        .push(text, map)
+        .map_err(|_| OpenAiProtocolError::Privacy)?;
+    *value = Value::String(restored);
     Ok(())
 }

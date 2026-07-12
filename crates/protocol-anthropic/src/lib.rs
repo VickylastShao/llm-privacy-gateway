@@ -4,7 +4,8 @@ mod messages;
 mod sse;
 
 pub use messages::{
-    AnthropicProtocolError, transform_messages_request, transform_messages_request_raw,
+    AnthropicProtocolError, restore_messages_response_raw, transform_messages_request,
+    transform_messages_request_raw,
 };
 pub use sse::AnthropicSseTransformer;
 pub use sse::restore_anthropic_sse;
