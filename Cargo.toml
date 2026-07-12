@@ -35,6 +35,7 @@ bytes = "1"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 hmac = "0.12"
+keyring = "3"
 http = "1"
 rand = "0.9"
 regex = "1"
