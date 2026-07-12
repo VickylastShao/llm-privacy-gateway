@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 
 use rusqlite::{Connection, OptionalExtension, params};
+use session_map::EncryptedRecord;
 use thiserror::Error;
 use url::Url;
 use uuid::Uuid;
@@ -76,9 +77,18 @@ pub struct Repository {
 }
 
 impl Repository {
+    pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self, StoreError> {
+        let connection = Connection::open(path).map_err(|_| StoreError::Database)?;
+        Self::initialize(connection)
+    }
+
     pub fn open_in_memory() -> Result<Self, StoreError> {
         let connection = Connection::open_in_memory().map_err(|_| StoreError::Database)?;
-        connection.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE profiles(id TEXT PRIMARY KEY,name TEXT NOT NULL,protocol TEXT NOT NULL,upstream_url TEXT NOT NULL,upstream_secret_ref TEXT NOT NULL,local_secret_ref TEXT NOT NULL,local_key_digest BLOB NOT NULL,policy TEXT NOT NULL); CREATE TABLE activities(id INTEGER PRIMARY KEY,profile_id TEXT NOT NULL,endpoint TEXT NOT NULL,model TEXT NOT NULL,status INTEGER NOT NULL,latency_ms INTEGER NOT NULL,category_counts TEXT NOT NULL,actions TEXT NOT NULL,request_id TEXT NOT NULL);").map_err(|_| StoreError::Database)?;
+        Self::initialize(connection)
+    }
+
+    fn initialize(connection: Connection) -> Result<Self, StoreError> {
+        connection.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY); CREATE TABLE IF NOT EXISTS profiles(id TEXT PRIMARY KEY,name TEXT NOT NULL,protocol TEXT NOT NULL,upstream_url TEXT NOT NULL,upstream_secret_ref TEXT NOT NULL,local_secret_ref TEXT NOT NULL,local_key_digest BLOB NOT NULL,policy TEXT NOT NULL); CREATE TABLE IF NOT EXISTS policy_rules(profile_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,entity_kind TEXT NOT NULL,action TEXT NOT NULL,PRIMARY KEY(profile_id,entity_kind)); CREATE TABLE IF NOT EXISTS pseudonym_records(profile_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,token TEXT NOT NULL,kind TEXT NOT NULL,nonce BLOB NOT NULL,ciphertext BLOB NOT NULL,PRIMARY KEY(profile_id,token)); CREATE TABLE IF NOT EXISTS activities(id INTEGER PRIMARY KEY,profile_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,endpoint TEXT NOT NULL,model TEXT NOT NULL,status INTEGER NOT NULL,latency_ms INTEGER NOT NULL,category_counts TEXT NOT NULL,actions TEXT NOT NULL,request_id TEXT NOT NULL); INSERT OR IGNORE INTO schema_migrations VALUES(1);").map_err(|_| StoreError::Database)?;
         Ok(Self { connection })
     }
     pub fn save_profile(&self, input: &ProfileInput) -> Result<(), StoreError> {
@@ -95,6 +105,31 @@ impl Repository {
         let actions = serde_json::to_string(&activity.actions).map_err(|_| StoreError::Database)?;
         self.connection.execute("INSERT INTO activities(profile_id,endpoint,model,status,latency_ms,category_counts,actions,request_id) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",params![activity.profile_id.to_string(),activity.endpoint,activity.model,activity.status,activity.latency_ms,counts,actions,activity.request_id]).map_err(|_|StoreError::Database)?;
         Ok(())
+    }
+
+    pub fn save_mapping_record(
+        &self,
+        profile_id: Uuid,
+        record: &EncryptedRecord,
+    ) -> Result<(), StoreError> {
+        self.connection.execute("INSERT INTO pseudonym_records(profile_id,token,kind,nonce,ciphertext) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(profile_id,token) DO UPDATE SET kind=excluded.kind,nonce=excluded.nonce,ciphertext=excluded.ciphertext", params![profile_id.to_string(), record.token(), record.kind(), record.nonce(), record.ciphertext()]).map_err(|_| StoreError::Database)?;
+        Ok(())
+    }
+
+    pub fn mapping_records(&self, profile_id: Uuid) -> Result<Vec<EncryptedRecord>, StoreError> {
+        let mut statement = self.connection.prepare("SELECT token,kind,nonce,ciphertext FROM pseudonym_records WHERE profile_id=?1 ORDER BY token").map_err(|_| StoreError::Database)?;
+        let rows = statement
+            .query_map([profile_id.to_string()], |row| {
+                let token: String = row.get(0)?;
+                let kind: String = row.get(1)?;
+                let nonce: Vec<u8> = row.get(2)?;
+                let ciphertext: Vec<u8> = row.get(3)?;
+                EncryptedRecord::from_encrypted_parts(token, kind, nonce, ciphertext)
+                    .map_err(|_| rusqlite::Error::InvalidQuery)
+            })
+            .map_err(|_| StoreError::Database)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|_| StoreError::Database)
     }
     pub fn debug_export(&self) -> Result<String, StoreError> {
         self.connection.query_row("SELECT group_concat(name || ':' || upstream_secret_ref || ':' || local_secret_ref) FROM profiles",[],|row|row.get::<_,Option<String>>(0)).map(|value|value.unwrap_or_default()).map_err(|_|StoreError::Database)

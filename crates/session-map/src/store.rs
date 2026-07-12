@@ -14,6 +14,27 @@ pub struct EncryptedRecord {
 }
 
 impl EncryptedRecord {
+    pub fn from_encrypted_parts(
+        token: String,
+        kind: String,
+        nonce: Vec<u8>,
+        ciphertext: Vec<u8>,
+    ) -> Result<Self, MapError> {
+        if nonce.len() != crypto::NONCE_LENGTH
+            || ciphertext.is_empty()
+            || token.is_empty()
+            || kind.is_empty()
+        {
+            return Err(MapError::InvalidRecord);
+        }
+        Ok(Self {
+            token,
+            kind,
+            nonce,
+            ciphertext,
+        })
+    }
+
     pub fn token(&self) -> &str {
         &self.token
     }
@@ -24,6 +45,10 @@ impl EncryptedRecord {
 
     pub fn ciphertext(&self) -> &[u8] {
         &self.ciphertext
+    }
+
+    pub fn nonce(&self) -> &[u8] {
+        &self.nonce
     }
 
     pub fn for_test(token: &str, kind: &str, nonce: Vec<u8>, ciphertext: Vec<u8>) -> Self {
@@ -55,6 +80,15 @@ pub struct MemoryBackend {
 }
 
 impl MemoryBackend {
+    pub fn from_records(records: impl IntoIterator<Item = EncryptedRecord>) -> Self {
+        Self {
+            records: records
+                .into_iter()
+                .map(|record| (record.token.clone(), record))
+                .collect(),
+        }
+    }
+
     pub fn get(&self, token: &str) -> Result<Option<EncryptedRecord>, MapError> {
         MappingBackend::get(self, token)
     }
