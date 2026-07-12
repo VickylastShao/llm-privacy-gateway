@@ -1,0 +1,1 @@
+{"model":"mock","messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"opaque thought","signature":"opaque-signature"},{"type":"tool_result","tool_use_id":"opaque-id","content":"Alpha Project"}]}]}

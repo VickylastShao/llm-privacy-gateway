@@ -1,0 +1,6 @@
+event: thinking_delta
+data: {"delta":{"thinking":"opaque"}}
+
+event: content_block_delta
+data: {"delta":{"text":"__LPG_EMAIL_TOKEN__"}}
+

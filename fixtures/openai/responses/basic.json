@@ -1,0 +1,1 @@
+{"model":"mock","instructions":"Alpha Project","input":[{"type":"message","content":[{"type":"input_text","text":"Alpha Project"},{"type":"input_image","file_id":"opaque-file"}]},{"type":"function_call_output","call_id":"opaque-call","output":"Alpha Project"}]}

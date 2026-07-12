@@ -1,0 +1,1 @@
+{"model":"mock","max_tokens":8,"system":"Alpha Project","messages":[{"role":"user","content":[{"type":"text","text":"Alpha Project"},{"type":"tool_result","tool_use_id":"opaque-id","content":"Alpha Project"}]}]}

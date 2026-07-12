@@ -1,0 +1,1 @@
+{"model":"mock","messages":[{"role":"assistant","content":"Alpha Project","tool_calls":[{"id":"call_1","function":{"name":"lookup","arguments":"Alpha Project"}}]}],"tools":[{"type":"function","function":{"name":"lookup","parameters":{"description":"Alpha Project"}}}]}
