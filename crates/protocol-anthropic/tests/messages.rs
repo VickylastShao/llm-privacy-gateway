@@ -1,5 +1,5 @@
 use privacy_core::{Policy, PrivacyEngine, StaticDictionary};
-use protocol_anthropic::transform_messages_request;
+use protocol_anthropic::{transform_messages_request, transform_messages_request_raw};
 use serde_json::json;
 use session_map::{MemoryBackend, PseudonymMap};
 use uuid::Uuid;
@@ -27,4 +27,24 @@ fn signed_thinking_blocks_remain_byte_equivalent_while_tool_results_transform() 
         "Alpha Project"
     );
     assert_eq!(request["messages"][0]["content"][2]["id"], "Alpha Project");
+}
+
+#[test]
+fn raw_adapter_keeps_signed_thinking_block_bytes_while_transforming_tool_result() {
+    let engine = PrivacyEngine::new(
+        Vec::new(),
+        StaticDictionary::new(["Alpha Project"])
+            .unwrap_or_else(|error| panic!("dictionary: {error}")),
+    );
+    let mut map = PseudonymMap::new(Uuid::nil(), [9; 32], MemoryBackend::default());
+    let signed = r#"{ "type" : "thinking", "thinking" : "opaque", "signature" : "sig==" }"#;
+    let request = format!(
+        r#"{{"model":"test","messages":[{{"role":"assistant","content":[{signed},{{"type":"tool_result","tool_use_id":"u1","content":"Alpha Project"}}]}}]}}"#
+    );
+
+    let output = transform_messages_request_raw(&request, &engine, &Policy::strict(), &mut map)
+        .unwrap_or_else(|error| panic!("transform: {error}"));
+
+    assert!(output.contains(signed));
+    assert!(!output.contains("\"content\":\"Alpha Project\""));
 }

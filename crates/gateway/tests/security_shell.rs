@@ -120,6 +120,23 @@ async fn unknown_routes_and_oversized_requests_fail_closed() {
 }
 
 #[tokio::test]
+async fn malformed_json_is_rejected_as_bad_request_before_forwarding() {
+    let response = gateway_router(local_state())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header(header::AUTHORIZATION, "Bearer local-limit-key")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from("{"))
+                .unwrap_or_else(|error| panic!("request: {error}")),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("gateway: {error}"));
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn transformed_canary_never_reaches_mock_upstream_in_plaintext() {
     let captured = Arc::new(Mutex::new(String::new()));
     let mock = axum::Router::new()
@@ -211,4 +228,128 @@ async fn openai_sse_response_restores_pseudonyms_before_returning_to_client() {
     let text = String::from_utf8(bytes.to_vec()).unwrap_or_else(|error| panic!("UTF-8: {error}"));
     assert!(text.contains("alice@example.test"));
     assert!(!text.contains("__LPG_"));
+}
+
+#[tokio::test]
+async fn anthropic_sse_response_restores_pseudonyms_before_returning_to_client() {
+    let mock = axum::Router::new().route("/v1/messages", post(|body: String| async move {
+        let token = serde_json::from_str::<serde_json::Value>(&body)
+            .unwrap_or_else(|error| panic!("mock JSON: {error}"))["messages"][0]["content"]
+            .as_str()
+            .unwrap_or_else(|| panic!("content must be string"))
+            .to_owned();
+        let split = token.len() / 2;
+        (
+            [("content-type", "text/event-stream")],
+            format!(
+                "event: content_block_delta\r\ndata: {{\"delta\":{{\"text\":\"{}\"}}}}\r\n\r\nevent: content_block_delta\r\ndata: {{\"delta\":{{\"text\":\"{}\"}}}}\r\n\r\n",
+                &token[..split],
+                &token[split..]
+            ),
+        )
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap_or_else(|error| panic!("mock bind: {error}"));
+    let address = listener
+        .local_addr()
+        .unwrap_or_else(|error| panic!("mock address: {error}"));
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, mock).await;
+    });
+    let profile = RuntimeProfile::new(
+        Uuid::nil(),
+        GatewayProtocol::Anthropic,
+        "local-anthropic-sse-key".to_owned(),
+        format!("http://{address}"),
+        SecretString::from("upstream-key"),
+        [10; 32],
+    );
+    let state =
+        GatewayState::new([profile]).unwrap_or_else(|error| panic!("gateway state: {error}"));
+    let response = gateway_router(state)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("x-api-key", "local-anthropic-sse-key")
+                .header("anthropic-version", "2023-06-01")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(
+                    "{\"model\":\"test\",\"stream\":true,\"max_tokens\":32,\"messages\":[{\"role\":\"user\",\"content\":\"alice@example.test\"}]}",
+                ))
+                .unwrap_or_else(|error| panic!("request: {error}")),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("gateway response: {error}"));
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .unwrap_or_else(|error| panic!("body: {error}"))
+        .to_bytes();
+    let text = String::from_utf8(bytes.to_vec()).unwrap_or_else(|error| panic!("UTF-8: {error}"));
+    assert!(text.contains("alice@example.test"));
+    assert!(!text.contains("__LPG_"));
+    assert!(text.contains("\r\n\r\n"));
+}
+
+#[tokio::test]
+async fn anthropic_gateway_forwards_signed_thinking_blocks_as_raw_json() {
+    let captured = Arc::new(Mutex::new(String::new()));
+    let mock = axum::Router::new()
+        .route(
+            "/v1/messages",
+            post(
+                |State(captured): State<Arc<Mutex<String>>>, body: String| async move {
+                    *captured.lock().unwrap_or_else(|_| panic!("capture lock")) = body;
+                    "{\"id\":\"mock\"}"
+                },
+            ),
+        )
+        .with_state(captured.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap_or_else(|error| panic!("mock bind: {error}"));
+    let address = listener
+        .local_addr()
+        .unwrap_or_else(|error| panic!("mock address: {error}"));
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, mock).await;
+    });
+    let profile = RuntimeProfile::new(
+        Uuid::nil(),
+        GatewayProtocol::Anthropic,
+        "local-raw-key".to_owned(),
+        format!("http://{address}"),
+        SecretString::from("upstream-key"),
+        [11; 32],
+    );
+    let state =
+        GatewayState::new([profile]).unwrap_or_else(|error| panic!("gateway state: {error}"));
+    let signed = r#"{ "type" : "thinking", "thinking" : "opaque", "signature" : "sig==" }"#;
+    let request = format!(
+        r#"{{"model":"test","messages":[{{"role":"assistant","content":[{signed},{{"type":"tool_result","tool_use_id":"u1","content":"canary@example.test"}}]}}]}}"#
+    );
+    let response = gateway_router(state)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("x-api-key", "local-raw-key")
+                .header("anthropic-version", "2023-06-01")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(request))
+                .unwrap_or_else(|error| panic!("request: {error}")),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("gateway response: {error}"));
+    assert_eq!(response.status(), StatusCode::OK);
+    let captured = captured
+        .lock()
+        .unwrap_or_else(|_| panic!("capture lock"))
+        .to_owned();
+    assert!(captured.contains(signed));
+    assert!(!captured.contains("canary@example.test"));
 }

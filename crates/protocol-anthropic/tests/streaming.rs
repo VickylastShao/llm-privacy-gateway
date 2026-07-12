@@ -51,3 +51,31 @@ fn transformer_accepts_every_utf8_byte_split() {
         );
     }
 }
+
+#[test]
+fn transformer_restores_crlf_delimited_multiline_data_and_preserves_ping_bytes() {
+    let mut map = PseudonymMap::new(Uuid::nil(), [3; 32], MemoryBackend::default());
+    let token = map
+        .pseudonymize("email", "alice@example.test")
+        .unwrap_or_else(|e| panic!("map: {e}"));
+    let source = format!(
+        ": keepalive\r\n\r\nevent: content_block_delta\r\ndata: {{\"delta\":\r\ndata: {{\"text\":\"{token}\"}}}}\r\n\r\n"
+    );
+
+    let output = restore_anthropic_sse(&source, &map).unwrap_or_else(|e| panic!("restore: {e}"));
+
+    assert!(output.starts_with(": keepalive\r\n\r\n"));
+    assert!(output.contains("alice@example.test"));
+    assert!(!output.contains(&token));
+    assert!(output.ends_with("\r\n\r\n"));
+}
+
+#[test]
+fn transformer_preserves_unknown_events_byte_for_byte() {
+    let map = PseudonymMap::new(Uuid::nil(), [4; 32], MemoryBackend::default());
+    let source = "event: message_start\r\ndata: { \"opaque\" : true }\r\nretry: 1000\r\n\r\n";
+
+    let output = restore_anthropic_sse(source, &map).unwrap_or_else(|e| panic!("restore: {e}"));
+
+    assert_eq!(output, source);
+}

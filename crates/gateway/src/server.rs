@@ -80,14 +80,16 @@ async fn openai_chat(
         "/v1/chat/completions",
         headers,
         body,
-        |value, state, profile| {
+        |body, state, profile| {
+            let mut value = serde_json::from_slice(body).map_err(|_| ForwardError::InvalidJson)?;
             protocol_openai::transform_chat_request(
-                value,
+                &mut value,
                 &state.engine,
                 &profile.policy,
-                &mut *profile.mappings.lock().map_err(|_| GatewayError::Blocked)?,
+                &mut *profile.mappings.lock().map_err(|_| ForwardError::Blocked)?,
             )
-            .map_err(|_| GatewayError::Blocked)
+            .map_err(|_| ForwardError::Blocked)?;
+            Ok(OutboundBody::Json(value))
         },
     )
     .await
@@ -103,14 +105,16 @@ async fn openai_responses(
         "/v1/responses",
         headers,
         body,
-        |value, state, profile| {
+        |body, state, profile| {
+            let mut value = serde_json::from_slice(body).map_err(|_| ForwardError::InvalidJson)?;
             protocol_openai::transform_responses_request(
-                value,
+                &mut value,
                 &state.engine,
                 &profile.policy,
-                &mut *profile.mappings.lock().map_err(|_| GatewayError::Blocked)?,
+                &mut *profile.mappings.lock().map_err(|_| ForwardError::Blocked)?,
             )
-            .map_err(|_| GatewayError::Blocked)
+            .map_err(|_| ForwardError::Blocked)?;
+            Ok(OutboundBody::Json(value))
         },
     )
     .await
@@ -126,14 +130,19 @@ async fn anthropic_messages(
         "/v1/messages",
         headers,
         body,
-        |value, state, profile| {
-            protocol_anthropic::transform_messages_request(
-                value,
+        |body, state, profile| {
+            let input = std::str::from_utf8(body).map_err(|_| ForwardError::InvalidJson)?;
+            let transformed = protocol_anthropic::transform_messages_request_raw(
+                input,
                 &state.engine,
                 &profile.policy,
-                &mut *profile.mappings.lock().map_err(|_| GatewayError::Blocked)?,
+                &mut *profile.mappings.lock().map_err(|_| ForwardError::Blocked)?,
             )
-            .map_err(|_| GatewayError::Blocked)
+            .map_err(|error| match error {
+                protocol_anthropic::AnthropicProtocolError::Privacy => ForwardError::Blocked,
+                protocol_anthropic::AnthropicProtocolError::Json => ForwardError::InvalidJson,
+            })?;
+            Ok(OutboundBody::Raw(transformed))
         },
     )
     .await
@@ -149,17 +158,32 @@ async fn anthropic_count_tokens(
         "/v1/messages/count_tokens",
         headers,
         body,
-        |value, state, profile| {
-            protocol_anthropic::transform_messages_request(
-                value,
+        |body, state, profile| {
+            let input = std::str::from_utf8(body).map_err(|_| ForwardError::InvalidJson)?;
+            let transformed = protocol_anthropic::transform_messages_request_raw(
+                input,
                 &state.engine,
                 &profile.policy,
-                &mut *profile.mappings.lock().map_err(|_| GatewayError::Blocked)?,
+                &mut *profile.mappings.lock().map_err(|_| ForwardError::Blocked)?,
             )
-            .map_err(|_| GatewayError::Blocked)
+            .map_err(|error| match error {
+                protocol_anthropic::AnthropicProtocolError::Privacy => ForwardError::Blocked,
+                protocol_anthropic::AnthropicProtocolError::Json => ForwardError::InvalidJson,
+            })?;
+            Ok(OutboundBody::Raw(transformed))
         },
     )
     .await
+}
+
+enum OutboundBody {
+    Json(serde_json::Value),
+    Raw(String),
+}
+
+enum ForwardError {
+    InvalidJson,
+    Blocked,
 }
 
 async fn forward<F>(
@@ -171,11 +195,7 @@ async fn forward<F>(
     transform: F,
 ) -> Response
 where
-    F: FnOnce(
-        &mut serde_json::Value,
-        &GatewayState,
-        &crate::RuntimeProfile,
-    ) -> Result<(), GatewayError>,
+    F: FnOnce(&[u8], &GatewayState, &crate::RuntimeProfile) -> Result<OutboundBody, ForwardError>,
 {
     let auth_profiles = state.auth_profiles();
     let Ok(profile_id) = authenticate(&headers, protocol, &auth_profiles) else {
@@ -184,22 +204,28 @@ where
     let Some(profile) = state.profiles.get(&profile_id) else {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     };
-    let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&body) else {
-        return (StatusCode::BAD_REQUEST, "invalid JSON").into_response();
+    let outbound = match transform(&body, &state, profile) {
+        Ok(outbound) => outbound,
+        Err(ForwardError::InvalidJson) => {
+            return (StatusCode::BAD_REQUEST, "invalid JSON").into_response();
+        }
+        Err(ForwardError::Blocked) => {
+            return (StatusCode::FORBIDDEN, "privacy policy blocked request").into_response();
+        }
     };
-    if transform(&mut value, &state, profile).is_err() {
-        return (StatusCode::FORBIDDEN, "privacy policy blocked request").into_response();
-    }
     let url = format!(
         "{}{}",
         profile.upstream_base_url.trim_end_matches('/'),
         path
     );
-    let mut request = state
+    let request = state
         .client
         .post(url)
-        .header("content-type", "application/json")
-        .json(&value);
+        .header("content-type", "application/json");
+    let mut request = match outbound {
+        OutboundBody::Json(value) => request.json(&value),
+        OutboundBody::Raw(body) => request.body(body),
+    };
     match protocol {
         GatewayProtocol::OpenAi => {
             request = request.bearer_auth(profile.upstream_key.expose_secret())
