@@ -1,0 +1,2 @@
+{"id":"china-resident-id","text":"11010519491231002X","expected":[{"kind":"ChinaResidentId","start":0,"end":18}]}
+{"id":"uscc-valid","text":"91350211m000100y46","expected":[{"kind":"UnifiedSocialCreditCode","start":0,"end":18}]}
