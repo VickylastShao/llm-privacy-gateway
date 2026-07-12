@@ -31,3 +31,12 @@ jobs:
         with: { python-version: '3.12' }
       - run: python -m pip install -r tests/compatibility/python/requirements.txt
       - run: python tests/compatibility/python/test_sdk_compatibility.py
+  windows-desktop:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: npm }
+      - run: npm ci
+      - run: npm run desktop:build
