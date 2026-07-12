@@ -12,7 +12,9 @@ use gateway::{
 };
 use rand::{TryRngCore, rngs::OsRng};
 use secrecy::{ExposeSecret, SecretString};
-use secret_store::{MemorySecretStore, SecretKind, SecretStore, service_account};
+#[cfg(any(not(target_os = "windows"), test))]
+use secret_store::MemorySecretStore;
+use secret_store::{SecretKind, SecretStore, service_account};
 use serde::{Deserialize, Serialize};
 use tauri::{
     Manager, State, WindowEvent,
@@ -253,10 +255,17 @@ fn create_profile(
     draft: ProfileDraft,
     state: State<'_, DesktopState>,
 ) -> Result<CreatedProfile, String> {
+    create_profile_with_state(draft, state.inner())
+}
+
+fn create_profile_with_state(
+    draft: ProfileDraft,
+    state: &DesktopState,
+) -> Result<CreatedProfile, String> {
     if draft.name.trim().is_empty() || draft.upstream_key.trim().is_empty() {
         return Err("profile name and upstream API key are required".to_owned());
     }
-    protocol_from_str(&draft.protocol)?;
+    let gateway_protocol = protocol_from_str(&draft.protocol)?;
     policy_from_str(&draft.policy)?;
     validate_upstream_url(&draft.upstream_url)
         .map_err(|_| "upstream URL must be HTTPS or loopback HTTP".to_owned())?;
@@ -275,6 +284,7 @@ fn create_profile(
     OsRng
         .try_fill_bytes(&mut mapping_key)
         .map_err(|_| "secure random generation failed")?;
+    let local_base_url = local_base_url(&gateway_protocol);
     let summary = ProfileSummary {
         id: id.to_string(),
         name: draft.name,
@@ -299,7 +309,7 @@ fn create_profile(
         .secrets
         .put(SecretKind::Mapping, id, SecretString::from(mapping_secret))
         .map_err(|_| "credential storage failed")?;
-    let protocol = match protocol_from_str(&summary.protocol)? {
+    let protocol = match gateway_protocol {
         GatewayProtocol::OpenAi => Protocol::OpenAi,
         GatewayProtocol::Anthropic => Protocol::Anthropic,
     };
@@ -333,10 +343,7 @@ fn create_profile(
         });
     Ok(CreatedProfile {
         profile: summary,
-        local_base_url: match protocol_from_str(&draft.protocol)? {
-            GatewayProtocol::OpenAi => format!("http://127.0.0.1:{LOCAL_GATEWAY_PORT}/v1"),
-            GatewayProtocol::Anthropic => format!("http://127.0.0.1:{LOCAL_GATEWAY_PORT}"),
-        },
+        local_base_url,
         local_key,
     })
 }
@@ -466,6 +473,13 @@ fn policy_from_str(value: &str) -> Result<privacy_core::Policy, String> {
     }
 }
 
+fn local_base_url(protocol: &GatewayProtocol) -> String {
+    match protocol {
+        GatewayProtocol::OpenAi => format!("http://127.0.0.1:{LOCAL_GATEWAY_PORT}/v1"),
+        GatewayProtocol::Anthropic => format!("http://127.0.0.1:{LOCAL_GATEWAY_PORT}"),
+    }
+}
+
 fn encode_mapping_key(key: [u8; 32]) -> String {
     key.iter().map(|byte| format!("{byte:02x}")).collect()
 }
@@ -478,6 +492,56 @@ fn decode_mapping_key(value: &str) -> Result<[u8; 32], ()> {
         *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16).map_err(|_| ())?;
     }
     Ok(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn create_profile_uses_protocol_for_local_url_after_persisting() {
+        let directory = std::env::temp_dir().join(format!("lpg-desktop-test-{}", Uuid::new_v4()));
+        let created_directory = std::fs::create_dir_all(&directory);
+        assert!(created_directory.is_ok());
+        let repository = match Repository::open(&directory.join("profiles.sqlite")) {
+            Ok(repository) => repository,
+            Err(error) => panic!("open test repository: {error}"),
+        };
+        let state = DesktopState {
+            gateway: Arc::new(Mutex::new(GatewayControl::default())),
+            profiles: Arc::new(Mutex::new(Vec::new())),
+            repository: Arc::new(Mutex::new(repository)),
+            secrets: Arc::new(MemorySecretStore::default()),
+        };
+
+        let created = match create_profile_with_state(
+            ProfileDraft {
+                name: "fixture".to_owned(),
+                protocol: "openai".to_owned(),
+                upstream_url: "https://api.example.test".to_owned(),
+                upstream_key: "fixture-upstream-key".to_owned(),
+                policy: "balanced".to_owned(),
+            },
+            &state,
+        ) {
+            Ok(created) => created,
+            Err(error) => panic!("create profile: {error}"),
+        };
+
+        assert_eq!(created.profile.protocol, "openai");
+        assert_eq!(
+            created.local_base_url,
+            format!("http://127.0.0.1:{LOCAL_GATEWAY_PORT}/v1")
+        );
+        let profile_count = match state.profiles.lock() {
+            Ok(profiles) => profiles.len(),
+            Err(error) => panic!("read created profiles: {error}"),
+        };
+        assert_eq!(profile_count, 1);
+        drop(state);
+        let removed_directory = std::fs::remove_dir_all(directory);
+        assert!(removed_directory.is_ok());
+    }
 }
 
 pub fn run() {
