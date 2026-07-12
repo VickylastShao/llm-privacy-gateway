@@ -14,7 +14,7 @@ pub use detectors::{
     UnifiedSocialCreditCodeDetector,
 };
 pub use dictionary::StaticDictionary;
-pub use engine::{Decision, Inspection, PrivacyEngine};
+pub use engine::{Decision, Inspection, PrivacyEngine, TransformResult};
 pub use policy::{Policy, PolicyAction};
 pub use types::{Detection, EntityKind, PrivacyError};
 

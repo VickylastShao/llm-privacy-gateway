@@ -98,4 +98,8 @@ pub enum PrivacyError {
     DictionaryBuild,
     #[error("detection range does not align with the inspected text")]
     InvalidTextRange,
+    #[error("request blocked by privacy policy")]
+    Blocked,
+    #[error("pseudonymization failed")]
+    Pseudonymization,
 }

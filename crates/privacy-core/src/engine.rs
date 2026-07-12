@@ -1,4 +1,8 @@
-use crate::{Detection, Detector, Policy, PolicyAction, PrivacyError, StaticDictionary, overlap};
+use session_map::Pseudonymizer;
+
+use crate::{
+    Detection, Detector, EntityKind, Policy, PolicyAction, PrivacyError, StaticDictionary, overlap,
+};
 
 #[derive(Debug, Clone)]
 pub struct Decision {
@@ -33,6 +37,18 @@ impl Inspection {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransformResult {
+    outbound_text: String,
+}
+
+impl TransformResult {
+    #[must_use]
+    pub fn outbound_text(&self) -> &str {
+        &self.outbound_text
+    }
+}
+
 pub struct PrivacyEngine {
     detectors: Vec<Box<dyn Detector>>,
     dictionary: StaticDictionary,
@@ -64,5 +80,61 @@ impl PrivacyEngine {
             }
         }
         Ok(Inspection { decisions })
+    }
+
+    pub fn transform<P: Pseudonymizer>(
+        &self,
+        text: &str,
+        policy: &Policy,
+        pseudonymizer: &mut P,
+    ) -> Result<TransformResult, PrivacyError> {
+        let inspection = self.inspect(text, policy)?;
+        if inspection.is_blocked() {
+            return Err(PrivacyError::Blocked);
+        }
+
+        let mut replacements = Vec::new();
+        for decision in inspection.decisions() {
+            let replacement = match decision.action() {
+                PolicyAction::Pseudonymize => {
+                    let value = text
+                        .get(decision.detection().range())
+                        .ok_or(PrivacyError::InvalidTextRange)?;
+                    pseudonymizer
+                        .pseudonymize(entity_label(decision.detection().kind()), value)
+                        .map_err(|_| PrivacyError::Pseudonymization)?
+                }
+                PolicyAction::Mask => "[REDACTED]".to_owned(),
+                PolicyAction::Allow | PolicyAction::Monitor | PolicyAction::Block => continue,
+            };
+            replacements.push((decision.detection().range(), replacement));
+        }
+
+        let mut outbound_text = text.to_owned();
+        for (range, replacement) in replacements.into_iter().rev() {
+            outbound_text.replace_range(range, &replacement);
+        }
+        Ok(TransformResult { outbound_text })
+    }
+}
+
+fn entity_label(kind: &EntityKind) -> &'static str {
+    match kind {
+        EntityKind::ApiKey => "api_key",
+        EntityKind::PrivateKey => "private_key",
+        EntityKind::Password => "password",
+        EntityKind::ConnectionString => "connection_string",
+        EntityKind::Jwt => "jwt",
+        EntityKind::ChinaResidentId => "china_resident_id",
+        EntityKind::UnifiedSocialCreditCode => "unified_social_credit_code",
+        EntityKind::BankCard => "bank_card",
+        EntityKind::Phone => "phone",
+        EntityKind::Email => "email",
+        EntityKind::Ipv4 => "ipv4",
+        EntityKind::Ipv6 => "ipv6",
+        EntityKind::MacAddress => "mac_address",
+        EntityKind::InternalHostname => "internal_hostname",
+        EntityKind::Coordinate => "coordinate",
+        EntityKind::Custom(_) => "custom",
     }
 }
