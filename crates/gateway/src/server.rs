@@ -28,7 +28,7 @@ pub fn gateway_router(state: Arc<GatewayState>) -> Router {
         .route("/v1/chat/completions", post(openai_chat))
         .route("/v1/responses", post(openai_responses))
         .route("/v1/messages", post(anthropic_messages))
-        .route("/v1/messages/count_tokens", post(anthropic_messages))
+        .route("/v1/messages/count_tokens", post(anthropic_count_tokens))
         .with_state(state)
         .layer(
             ServiceBuilder::new()
@@ -112,6 +112,29 @@ async fn anthropic_messages(
         state,
         GatewayProtocol::Anthropic,
         "/v1/messages",
+        headers,
+        body,
+        |value, state, profile| {
+            protocol_anthropic::transform_messages_request(
+                value,
+                &state.engine,
+                &profile.policy,
+                &mut *profile.mappings.lock().map_err(|_| GatewayError::Blocked)?,
+            )
+            .map_err(|_| GatewayError::Blocked)
+        },
+    )
+    .await
+}
+async fn anthropic_count_tokens(
+    State(state): State<Arc<GatewayState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    forward(
+        state,
+        GatewayProtocol::Anthropic,
+        "/v1/messages/count_tokens",
         headers,
         body,
         |value, state, profile| {
