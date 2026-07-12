@@ -1,3 +1,11 @@
 #![forbid(unsafe_code)]
 
+mod chat;
+mod error;
+mod responses;
+
+pub use chat::transform_chat_request;
+pub use error::OpenAiProtocolError;
+pub use responses::transform_responses_request;
+
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
