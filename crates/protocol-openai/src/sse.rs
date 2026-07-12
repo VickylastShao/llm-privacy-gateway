@@ -45,4 +45,12 @@ impl SseDecoder {
         }
         Ok(output)
     }
+
+    pub fn finish(&self) -> Result<(), OpenAiProtocolError> {
+        if self.buffer.is_empty() && self.event.is_none() && self.data.is_empty() {
+            Ok(())
+        } else {
+            Err(OpenAiProtocolError::IncompleteSseEvent)
+        }
+    }
 }

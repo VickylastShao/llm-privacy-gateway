@@ -49,6 +49,7 @@ impl OpenAiSseTransformer {
     }
 
     pub fn finish(&mut self) -> Result<Vec<u8>, OpenAiProtocolError> {
+        self.decoder.finish()?;
         if !self.utf8_tail.is_empty() || !std::mem::take(&mut self.restorer).finish().is_empty() {
             return Err(OpenAiProtocolError::IncompletePlaceholder);
         }

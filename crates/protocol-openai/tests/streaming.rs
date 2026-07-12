@@ -87,3 +87,13 @@ fn transformer_accepts_every_utf8_byte_split() {
         assert!(text.contains("你好 alice@example.test"), "split {split}");
     }
 }
+
+#[test]
+fn transformer_fails_closed_on_an_unterminated_event() {
+    let map = PseudonymMap::new(Uuid::nil(), [1; 32], MemoryBackend::default());
+    let mut transformer = OpenAiSseTransformer::default();
+    transformer
+        .push_bytes(b"data: {\"choices\":[]}", &map)
+        .unwrap_or_else(|error| panic!("partial event: {error}"));
+    assert!(transformer.finish().is_err());
+}

@@ -10,4 +10,6 @@ pub enum OpenAiProtocolError {
     InvalidSseJson,
     #[error("SSE stream ended with an incomplete placeholder")]
     IncompletePlaceholder,
+    #[error("SSE stream ended with an incomplete event")]
+    IncompleteSseEvent,
 }
