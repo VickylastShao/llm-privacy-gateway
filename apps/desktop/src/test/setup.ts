@@ -9,6 +9,6 @@ Object.defineProperty(navigator, "clipboard", {
 afterEach(() => {
   cleanup();
   localStorage.clear();
+  vi.clearAllMocks();
   vi.restoreAllMocks();
-  vi.mocked(navigator.clipboard.writeText).mockClear();
 });

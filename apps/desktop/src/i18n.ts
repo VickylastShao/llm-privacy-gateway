@@ -1,0 +1,205 @@
+const LOCALE_STORAGE_KEY = "lpg.locale";
+
+const en = {
+  appName: "LLM Privacy Gateway",
+  appPurpose: "Keep sensitive information local before model requests leave your device.",
+  language: "Language",
+  chinese: "中文",
+  english: "English",
+  gatewayRunning: "Protection on",
+  gatewayStopped: "Protection off",
+  gatewayLoading: "Checking status",
+  startProtection: "Start protection",
+  stopProtection: "Stop protection",
+  startingProtection: "Starting…",
+  stoppingProtection: "Stopping…",
+  needConnection: "Add a connection before starting protection.",
+  firstRunTitle: "Connect your first model",
+  firstRunDescription: "Complete these steps once, then point your AI client to the local address.",
+  stepAdd: "Add model connection",
+  stepCopy: "Copy local settings",
+  stepStart: "Start protection",
+  connectionsTitle: "Model connections",
+  connectionsDescription: "Requests sent to the local address are filtered before forwarding upstream.",
+  addConnection: "Add connection",
+  closeForm: "Cancel",
+  connectionForm: "Model connection",
+  connectionName: "Connection name",
+  connectionNamePlaceholder: "For example: DeepSeek",
+  protocol: "Protocol",
+  openaiCompatible: "OpenAI-compatible",
+  anthropicMessages: "Anthropic Messages",
+  upstreamBaseUrl: "Upstream Base URL",
+  resetDefaultUrl: "Reset to protocol default",
+  upstreamApiKey: "Upstream API key",
+  apiKeyHint: "Stored in the operating system credential vault and never shown again.",
+  advancedSettings: "Advanced privacy settings",
+  policy: "Privacy policy",
+  policyStrict: "Strict",
+  policyStrictDescription: "Blocks credentials and pseudonymizes supported sensitive text.",
+  policyBalanced: "Balanced",
+  policyBalancedDescription: "Blocks credentials and masks selected sensitive text.",
+  policyMonitor: "Monitor",
+  policyMonitorDescription: "Reports detections without changing request content.",
+  createConnection: "Create connection",
+  creatingConnection: "Creating…",
+  noConnections: "No model connections yet.",
+  localBaseUrl: "Local Base URL",
+  upstream: "Upstream",
+  copyBaseUrl: "Copy local Base URL",
+  copied: "Copied",
+  moreActions: "More actions for {name}",
+  rotateLocalKey: "Rotate local key",
+  deleteConnection: "Delete connection",
+  rotateTitle: "Rotate the local key?",
+  rotateDescription: "Clients using the current key will stop working. The replacement key is shown once.",
+  deleteTitle: "Delete {name}?",
+  deleteDescription: "This removes the connection and its stored credentials from this device.",
+  stopBeforeChange: "Stop protection before changing connections.",
+  confirmRotate: "Rotate key",
+  confirmDelete: "Delete connection",
+  cancel: "Cancel",
+  oneTimeTitle: "Copy these local settings now",
+  oneTimeDescription: "The local key is shown only once. Store it in your AI client's configuration.",
+  localApiKey: "Local API key",
+  copyKey: "Copy local API key",
+  copyFullConfiguration: "Copy full configuration",
+  dismissSecret: "I have saved it",
+  technicalDetail: "Technical detail",
+  operationFailed: "The operation failed.",
+  statusRegion: "Gateway status",
+  connectionList: "Configured model connections",
+  confirmation: "Confirmation",
+} as const;
+
+const zh = {
+  appName: "LLM 隐私网关",
+  appPurpose: "在模型请求离开设备前，本地识别并处理敏感信息。",
+  language: "语言",
+  chinese: "中文",
+  english: "English",
+  gatewayRunning: "保护已开启",
+  gatewayStopped: "保护未开启",
+  gatewayLoading: "正在检查状态",
+  startProtection: "启动保护",
+  stopProtection: "停止保护",
+  startingProtection: "正在启动…",
+  stoppingProtection: "正在停止…",
+  needConnection: "请先添加连接，再启动保护。",
+  firstRunTitle: "连接第一个模型",
+  firstRunDescription: "完成一次配置后，把 AI 客户端指向本地地址即可。",
+  stepAdd: "添加模型连接",
+  stepCopy: "复制本地配置",
+  stepStart: "启动保护",
+  connectionsTitle: "模型连接",
+  connectionsDescription: "发送到本地地址的请求会先经过隐私过滤，再转发到上游。",
+  addConnection: "添加连接",
+  closeForm: "取消",
+  connectionForm: "模型连接",
+  connectionName: "连接名称",
+  connectionNamePlaceholder: "例如：DeepSeek",
+  protocol: "接口协议",
+  openaiCompatible: "OpenAI 兼容",
+  anthropicMessages: "Anthropic Messages",
+  upstreamBaseUrl: "上游 Base URL",
+  resetDefaultUrl: "恢复协议默认地址",
+  upstreamApiKey: "上游 API Key",
+  apiKeyHint: "密钥保存到操作系统凭据库，提交后不再显示。",
+  advancedSettings: "高级隐私设置",
+  policy: "隐私策略",
+  policyStrict: "严格",
+  policyStrictDescription: "阻断凭据，并对支持的敏感文本进行假名化。",
+  policyBalanced: "均衡",
+  policyBalancedDescription: "阻断凭据，并遮盖选定的敏感文本。",
+  policyMonitor: "仅监测",
+  policyMonitorDescription: "报告检测结果，但不修改请求内容。",
+  createConnection: "创建连接",
+  creatingConnection: "正在创建…",
+  noConnections: "尚未配置模型连接。",
+  localBaseUrl: "本地 Base URL",
+  upstream: "上游地址",
+  copyBaseUrl: "复制本地 Base URL",
+  copied: "已复制",
+  moreActions: "{name} 的更多操作",
+  rotateLocalKey: "轮换本地密钥",
+  deleteConnection: "删除连接",
+  rotateTitle: "轮换本地密钥？",
+  rotateDescription: "使用当前密钥的客户端将停止工作。新密钥只显示一次。",
+  deleteTitle: "删除 {name}？",
+  deleteDescription: "将从本机删除此连接及其保存的凭据。",
+  stopBeforeChange: "请先停止保护，再修改连接。",
+  confirmRotate: "轮换密钥",
+  confirmDelete: "删除连接",
+  cancel: "取消",
+  oneTimeTitle: "请立即复制本地配置",
+  oneTimeDescription: "本地密钥只显示一次，请保存到 AI 客户端配置中。",
+  localApiKey: "本地 API Key",
+  copyKey: "复制本地 API Key",
+  copyFullConfiguration: "复制完整配置",
+  dismissSecret: "我已保存",
+  technicalDetail: "技术详情",
+  operationFailed: "操作失败。",
+  statusRegion: "网关状态",
+  connectionList: "已配置的模型连接",
+  confirmation: "确认操作",
+} satisfies Record<keyof typeof en, string>;
+
+export const catalogs = { en, "zh-CN": zh } as const;
+export type Locale = keyof typeof catalogs;
+export type TranslationKey = keyof typeof en;
+export type Translator = (
+  key: TranslationKey,
+  values?: Record<string, string>,
+) => string;
+
+export function detectLocale(language: string): Locale {
+  return language.toLowerCase().startsWith("zh") ? "zh-CN" : "en";
+}
+
+export function initialLocale(language = navigator.language): Locale {
+  try {
+    const stored = localStorage.getItem(LOCALE_STORAGE_KEY);
+    if (stored === "en" || stored === "zh-CN") return stored;
+  } catch {
+    // A disabled WebView storage area should not prevent application startup.
+  }
+  return detectLocale(language);
+}
+
+export function setLocalePreference(locale: Locale): void {
+  try {
+    localStorage.setItem(LOCALE_STORAGE_KEY, locale);
+  } catch {
+    // The selected locale still applies for the current process.
+  }
+}
+
+export function translate(
+  locale: Locale,
+  key: TranslationKey,
+  values: Record<string, string> = {},
+): string {
+  return Object.entries(values).reduce(
+    (message, [name, value]) => message.replaceAll(`{${name}}`, value),
+    catalogs[locale][key] as string,
+  );
+}
+
+const knownErrors: Record<string, TranslationKey> = {
+  "create a profile before starting the gateway": "needConnection",
+  "stop the gateway before changing profiles": "stopBeforeChange",
+  "stop the gateway before rotating a local key": "stopBeforeChange",
+  "profile name and upstream API key are required": "operationFailed",
+  "upstream URL must be HTTPS or loopback HTTP": "operationFailed",
+  "profile does not exist": "operationFailed",
+};
+
+export function localizeError(
+  locale: Locale,
+  error: unknown,
+): { summary: string; detail?: string } {
+  const detail = error instanceof Error ? error.message : String(error);
+  const key = knownErrors[detail];
+  if (key) return { summary: translate(locale, key) };
+  return { summary: translate(locale, "operationFailed"), detail };
+}
