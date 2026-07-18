@@ -11,7 +11,7 @@ use secrecy::SecretString;
 use session_map::{MemoryBackend, PseudonymMap};
 use uuid::Uuid;
 
-use crate::{AuthProfile, GatewayProtocol, local_key_digest};
+use crate::{ActivitySink, AuthProfile, GatewayProtocol, NoopActivitySink, local_key_digest};
 
 pub struct RuntimeProfile {
     pub id: Uuid,
@@ -55,10 +55,18 @@ pub struct GatewayState {
     pub client: reqwest::Client,
     pub profiles: HashMap<Uuid, Arc<RuntimeProfile>>,
     pub engine: PrivacyEngine,
+    pub activity_sink: Arc<dyn ActivitySink>,
 }
 impl GatewayState {
     pub fn new(
         profiles: impl IntoIterator<Item = RuntimeProfile>,
+    ) -> Result<Arc<Self>, reqwest::Error> {
+        Self::new_with_sink(profiles, Arc::new(NoopActivitySink))
+    }
+
+    pub fn new_with_sink(
+        profiles: impl IntoIterator<Item = RuntimeProfile>,
+        activity_sink: Arc<dyn ActivitySink>,
     ) -> Result<Arc<Self>, reqwest::Error> {
         let profiles = profiles
             .into_iter()
@@ -77,6 +85,7 @@ impl GatewayState {
                 ],
                 StaticDictionary::empty(),
             ),
+            activity_sink,
         }))
     }
     pub fn auth_profiles(&self) -> Vec<AuthProfile> {

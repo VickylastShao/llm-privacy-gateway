@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod activity;
 mod auth;
 mod config;
 mod error;
@@ -7,6 +8,7 @@ mod runtime;
 mod server;
 mod upstream;
 
+pub use activity::{ActivityEvent, ActivitySink, NoopActivitySink};
 pub use auth::{AuthProfile, GatewayProtocol, authenticate, local_key_digest};
 pub use config::GatewayConfig;
 pub use error::GatewayError;

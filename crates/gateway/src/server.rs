@@ -1,4 +1,8 @@
-use std::{future::Future, sync::Arc};
+use std::{
+    future::Future,
+    sync::Arc,
+    time::{Instant, SystemTime, UNIX_EPOCH},
+};
 
 use axum::{
     Router,
@@ -9,6 +13,7 @@ use axum::{
     routing::{get, post},
 };
 use futures_util::{StreamExt, stream};
+use privacy_core::RequestPrivacyReport;
 use secrecy::ExposeSecret;
 use tower::{ServiceBuilder, limit::ConcurrencyLimitLayer};
 use tower_http::{
@@ -99,13 +104,14 @@ async fn openai_chat(
         "/chat/completions",
         headers,
         body,
-        |body, state, profile| {
+        |body, state, profile, report| {
             let mut value = serde_json::from_slice(body).map_err(|_| ForwardError::InvalidJson)?;
-            protocol_openai::transform_chat_request(
+            protocol_openai::transform_chat_request_with_report(
                 &mut value,
                 &state.engine,
                 &profile.policy,
                 &mut *profile.mappings.lock().map_err(|_| ForwardError::Blocked)?,
+                report,
             )
             .map_err(|_| ForwardError::Blocked)?;
             Ok(OutboundBody::Json(value))
@@ -125,13 +131,14 @@ async fn openai_responses(
         "/responses",
         headers,
         body,
-        |body, state, profile| {
+        |body, state, profile, report| {
             let mut value = serde_json::from_slice(body).map_err(|_| ForwardError::InvalidJson)?;
-            protocol_openai::transform_responses_request(
+            protocol_openai::transform_responses_request_with_report(
                 &mut value,
                 &state.engine,
                 &profile.policy,
                 &mut *profile.mappings.lock().map_err(|_| ForwardError::Blocked)?,
+                report,
             )
             .map_err(|_| ForwardError::Blocked)?;
             Ok(OutboundBody::Json(value))
@@ -151,13 +158,14 @@ async fn anthropic_messages(
         "/v1/messages",
         headers,
         body,
-        |body, state, profile| {
+        |body, state, profile, report| {
             let input = std::str::from_utf8(body).map_err(|_| ForwardError::InvalidJson)?;
-            let transformed = protocol_anthropic::transform_messages_request_raw(
+            let transformed = protocol_anthropic::transform_messages_request_raw_with_report(
                 input,
                 &state.engine,
                 &profile.policy,
                 &mut *profile.mappings.lock().map_err(|_| ForwardError::Blocked)?,
+                report,
             )
             .map_err(|error| match error {
                 protocol_anthropic::AnthropicProtocolError::Privacy => ForwardError::Blocked,
@@ -180,13 +188,14 @@ async fn anthropic_count_tokens(
         "/v1/messages/count_tokens",
         headers,
         body,
-        |body, state, profile| {
+        |body, state, profile, report| {
             let input = std::str::from_utf8(body).map_err(|_| ForwardError::InvalidJson)?;
-            let transformed = protocol_anthropic::transform_messages_request_raw(
+            let transformed = protocol_anthropic::transform_messages_request_raw_with_report(
                 input,
                 &state.engine,
                 &profile.policy,
                 &mut *profile.mappings.lock().map_err(|_| ForwardError::Blocked)?,
+                report,
             )
             .map_err(|error| match error {
                 protocol_anthropic::AnthropicProtocolError::Privacy => ForwardError::Blocked,
@@ -287,7 +296,12 @@ async fn forward<F>(
     transform: F,
 ) -> Response
 where
-    F: FnOnce(&[u8], &GatewayState, &crate::RuntimeProfile) -> Result<OutboundBody, ForwardError>,
+    F: FnOnce(
+        &[u8],
+        &GatewayState,
+        &crate::RuntimeProfile,
+        &mut RequestPrivacyReport,
+    ) -> Result<OutboundBody, ForwardError>,
 {
     let auth_profiles = state.auth_profiles();
     let Ok(profile_id) = authenticate(&headers, protocol, &auth_profiles) else {
@@ -296,12 +310,28 @@ where
     let Some(profile) = state.profiles.get(&profile_id) else {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     };
-    let outbound = match transform(&body, &state, profile) {
+    let started = Instant::now();
+    let occurred_at_ms = now_ms();
+    let request_id = request_id(&headers);
+    let model = request_model(&body);
+    let mut report = RequestPrivacyReport::default();
+    let outbound = match transform(&body, &state, profile, &mut report) {
         Ok(outbound) => outbound,
         Err(ForwardError::InvalidJson) => {
             return (StatusCode::BAD_REQUEST, "invalid JSON").into_response();
         }
         Err(ForwardError::Blocked) => {
+            publish_activity(
+                &state,
+                profile_id,
+                path,
+                model,
+                StatusCode::FORBIDDEN,
+                started,
+                request_id,
+                report,
+                occurred_at_ms,
+            );
             return (StatusCode::FORBIDDEN, "privacy policy blocked request").into_response();
         }
     };
@@ -337,6 +367,17 @@ where
     match request.send().await {
         Ok(response) => {
             let status = response.status();
+            publish_activity(
+                &state,
+                profile_id,
+                path,
+                model,
+                status,
+                started,
+                request_id,
+                report,
+                occurred_at_ms,
+            );
             let content_type = response.headers().get("content-type").cloned();
             let is_sse = content_type
                 .as_ref()
@@ -513,6 +554,76 @@ where
                 Err(_) => (StatusCode::BAD_GATEWAY, "upstream response failed").into_response(),
             }
         }
-        Err(_) => (StatusCode::BAD_GATEWAY, "upstream request failed").into_response(),
+        Err(_) => {
+            publish_activity(
+                &state,
+                profile_id,
+                path,
+                model,
+                StatusCode::BAD_GATEWAY,
+                started,
+                request_id,
+                report,
+                occurred_at_ms,
+            );
+            (StatusCode::BAD_GATEWAY, "upstream request failed").into_response()
+        }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn publish_activity(
+    state: &GatewayState,
+    profile_id: uuid::Uuid,
+    endpoint: &str,
+    model: String,
+    status: StatusCode,
+    started: Instant,
+    request_id: String,
+    report: RequestPrivacyReport,
+    occurred_at_ms: i64,
+) {
+    if report.is_empty() {
+        return;
+    }
+    let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let _ = state.activity_sink.publish(crate::ActivityEvent {
+        id: uuid::Uuid::new_v4(),
+        occurred_at_ms,
+        profile_id,
+        endpoint: endpoint.to_owned(),
+        model,
+        status: status.as_u16(),
+        latency_ms,
+        request_id,
+        report,
+    });
+}
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| i64::try_from(duration.as_millis()).ok())
+        .unwrap_or(0)
+}
+
+fn request_id(headers: &HeaderMap) -> String {
+    headers
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+}
+
+fn request_model(body: &[u8]) -> String {
+    serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("model")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .unwrap_or_default()
 }

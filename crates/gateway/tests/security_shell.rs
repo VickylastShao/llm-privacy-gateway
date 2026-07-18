@@ -4,8 +4,8 @@ use axum::{
     routing::post,
 };
 use gateway::{
-    AuthProfile, GatewayConfig, GatewayError, GatewayProtocol, GatewayState, RuntimeProfile,
-    authenticate, gateway_router, local_key_digest, router,
+    ActivityEvent, ActivitySink, AuthProfile, GatewayConfig, GatewayError, GatewayProtocol,
+    GatewayState, RuntimeProfile, authenticate, gateway_router, local_key_digest, router,
 };
 use http_body_util::BodyExt;
 use secrecy::SecretString;
@@ -15,6 +15,29 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 type Captures = Arc<Mutex<Vec<(String, String)>>>;
+
+#[derive(Default)]
+struct CollectingSink {
+    events: Mutex<Vec<ActivityEvent>>,
+}
+
+impl ActivitySink for CollectingSink {
+    fn publish(&self, event: ActivityEvent) -> bool {
+        self.events
+            .lock()
+            .unwrap_or_else(|_| panic!("activity lock"))
+            .push(event);
+        true
+    }
+}
+
+struct RejectingSink;
+
+impl ActivitySink for RejectingSink {
+    fn publish(&self, _event: ActivityEvent) -> bool {
+        false
+    }
+}
 
 fn local_state() -> std::sync::Arc<GatewayState> {
     GatewayState::new([RuntimeProfile::new(
@@ -171,6 +194,99 @@ async fn malformed_json_is_rejected_as_bad_request_before_forwarding() {
         .await
         .unwrap_or_else(|error| panic!("gateway: {error}"));
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn blocked_sensitive_request_publishes_one_safe_activity() {
+    const CANARY: &str = "sk-test-abcdefghijklmnopqrstuvwxyz";
+    let sink = Arc::new(CollectingSink::default());
+    let state = GatewayState::new_with_sink(
+        [RuntimeProfile::new(
+            Uuid::nil(),
+            GatewayProtocol::OpenAi,
+            "local-activity-key".to_owned(),
+            "http://127.0.0.1:9/v1".to_owned(),
+            SecretString::from("upstream-key"),
+            [20; 32],
+        )],
+        sink.clone(),
+    )
+    .unwrap_or_else(|error| panic!("gateway state: {error}"));
+
+    let response = gateway_router(state)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header(header::AUTHORIZATION, "Bearer local-activity-key")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(format!(
+                    r#"{{"model":"deepseek-chat","messages":[{{"role":"user","content":"api_key={CANARY}"}}]}}"#
+                )))
+                .unwrap_or_else(|error| panic!("request: {error}")),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("gateway: {error}"));
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let events = sink
+        .events
+        .lock()
+        .unwrap_or_else(|_| panic!("activity lock"));
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].status, 403);
+    assert_eq!(events[0].model, "deepseek-chat");
+    assert_eq!(events[0].report.category_counts().get("api_key"), Some(&1));
+    assert!(!format!("{:?}", events[0]).contains(CANARY));
+}
+
+#[tokio::test]
+async fn sink_rejection_does_not_fail_transformed_requests() {
+    let mock = axum::Router::new().route(
+        "/v1/chat/completions",
+        post(|| async { "{\"id\":\"mock\"}" }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap_or_else(|error| panic!("mock bind: {error}"));
+    let address = listener
+        .local_addr()
+        .unwrap_or_else(|error| panic!("mock address: {error}"));
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, mock).await;
+    });
+    let state = GatewayState::new_with_sink(
+        [RuntimeProfile::new(
+            Uuid::nil(),
+            GatewayProtocol::OpenAi,
+            "local-rejecting-sink-key".to_owned(),
+            format!("http://{address}/v1"),
+            SecretString::from("upstream-key"),
+            [21; 32],
+        )],
+        Arc::new(RejectingSink),
+    )
+    .unwrap_or_else(|error| panic!("gateway state: {error}"));
+
+    let response = gateway_router(state)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header(
+                    header::AUTHORIZATION,
+                    "Bearer local-rejecting-sink-key",
+                )
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(
+                    r#"{"model":"test","messages":[{"role":"user","content":"11010519491231002X"}]}"#,
+                ))
+                .unwrap_or_else(|error| panic!("request: {error}")),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("gateway: {error}"));
+
+    assert_eq!(response.status(), StatusCode::OK);
 }
 
 #[tokio::test]
