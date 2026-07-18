@@ -27,7 +27,7 @@ apps/desktop/src/styles.css                       Single-page visual system and 
 apps/desktop/src/test/setup.ts                    DOM test cleanup and browser stubs
 apps/desktop/src/*.test.ts(x)                     Locale and application behavior tests
 apps/desktop/src-tauri/src/main.rs                 Release-only Windows GUI subsystem
-apps/desktop/src-tauri/tests/windows_entry.rs      Console regression source check
+apps/desktop/src/windows-entry.test.ts             Cross-platform console regression source check
 package.json / package-lock.json                  DOM testing dependencies and scripts
 vite.config.ts                                    jsdom test environment and setup
 ```
@@ -286,13 +286,13 @@ git commit -m "style: simplify desktop task flow"
 ### Task 6: Suppress the Windows release console and complete verification
 
 **Files:**
-- Create: `apps/desktop/src-tauri/tests/windows_entry.rs`
+- Create: `apps/desktop/src/windows-entry.test.ts`
 - Modify: `apps/desktop/src-tauri/src/main.rs`
 - Modify: `docs/release-checklist.md`
 
 - [ ] **Step 1: Write the failing regression test**
 
-The integration test reads `src/main.rs` with `include_str!` and asserts it contains exactly:
+The Vitest regression test reads `apps/desktop/src-tauri/src/main.rs` and asserts it contains exactly:
 
 ```rust
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -301,7 +301,7 @@ The integration test reads `src/main.rs` with `include_str!` and asserts it cont
 Run:
 
 ```bash
-cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --test windows_entry --locked
+PATH=/home/shao/.nvm/versions/node/v24.13.1/bin:$PATH npx vitest run apps/desktop/src/windows-entry.test.ts
 ```
 
 Expected: FAIL because the attribute is missing.
@@ -343,7 +343,7 @@ Expected: the release executable and NSIS installer are produced. Launch the pac
 - [ ] **Step 6: Commit**
 
 ```bash
-git add apps/desktop/src-tauri/src/main.rs apps/desktop/src-tauri/tests/windows_entry.rs docs/release-checklist.md
+git add apps/desktop/src-tauri/src/main.rs apps/desktop/src/windows-entry.test.ts docs/release-checklist.md
 git commit -m "fix: hide Windows release console"
 ```
 
