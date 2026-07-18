@@ -1,7 +1,8 @@
 use session_map::Pseudonymizer;
 
 use crate::{
-    Detection, Detector, EntityKind, Policy, PolicyAction, PrivacyError, StaticDictionary, overlap,
+    Detection, Detector, Policy, PolicyAction, PrivacyError, RequestPrivacyReport,
+    StaticDictionary, overlap,
 };
 
 #[derive(Debug, Clone)]
@@ -88,7 +89,28 @@ impl PrivacyEngine {
         policy: &Policy,
         pseudonymizer: &mut P,
     ) -> Result<TransformResult, PrivacyError> {
+        self.transform_reported(
+            text,
+            policy,
+            pseudonymizer,
+            &mut RequestPrivacyReport::default(),
+        )
+    }
+
+    pub fn transform_reported<P: Pseudonymizer>(
+        &self,
+        text: &str,
+        policy: &Policy,
+        pseudonymizer: &mut P,
+        report: &mut RequestPrivacyReport,
+    ) -> Result<TransformResult, PrivacyError> {
         let inspection = self.inspect(text, policy)?;
+        for decision in inspection.decisions() {
+            let value = text
+                .get(decision.detection().range())
+                .ok_or(PrivacyError::InvalidTextRange)?;
+            report.record(decision, value);
+        }
         if inspection.is_blocked() {
             return Err(PrivacyError::Blocked);
         }
@@ -101,7 +123,10 @@ impl PrivacyEngine {
                         .get(decision.detection().range())
                         .ok_or(PrivacyError::InvalidTextRange)?;
                     pseudonymizer
-                        .pseudonymize(entity_label(decision.detection().kind()), value)
+                        .pseudonymize(
+                            crate::report::entity_label(decision.detection().kind()),
+                            value,
+                        )
                         .map_err(|_| PrivacyError::Pseudonymization)?
                 }
                 PolicyAction::Mask => "[REDACTED]".to_owned(),
@@ -115,26 +140,5 @@ impl PrivacyEngine {
             outbound_text.replace_range(range, &replacement);
         }
         Ok(TransformResult { outbound_text })
-    }
-}
-
-fn entity_label(kind: &EntityKind) -> &'static str {
-    match kind {
-        EntityKind::ApiKey => "api_key",
-        EntityKind::PrivateKey => "private_key",
-        EntityKind::Password => "password",
-        EntityKind::ConnectionString => "connection_string",
-        EntityKind::Jwt => "jwt",
-        EntityKind::ChinaResidentId => "china_resident_id",
-        EntityKind::UnifiedSocialCreditCode => "unified_social_credit_code",
-        EntityKind::BankCard => "bank_card",
-        EntityKind::Phone => "phone",
-        EntityKind::Email => "email",
-        EntityKind::Ipv4 => "ipv4",
-        EntityKind::Ipv6 => "ipv6",
-        EntityKind::MacAddress => "mac_address",
-        EntityKind::InternalHostname => "internal_hostname",
-        EntityKind::Coordinate => "coordinate",
-        EntityKind::Custom(_) => "custom",
     }
 }
