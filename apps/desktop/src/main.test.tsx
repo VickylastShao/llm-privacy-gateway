@@ -1,11 +1,31 @@
-import { describe, expect, it } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import { App } from "./App";
+import type { DesktopApi } from "./desktop-api";
 
-describe("desktop security defaults", () => {
-  it("documents strict local-only control plane content", () => {
-    expect("prompts, provider keys, and pseudonym mappings are never rendered").toContain("never");
-  });
+function emptyApi(): DesktopApi {
+  return {
+    gatewayStatus: vi.fn().mockResolvedValue({ running: false }),
+    startGateway: vi.fn().mockResolvedValue({ running: true }),
+    stopGateway: vi.fn().mockResolvedValue({ running: false }),
+    listProfiles: vi.fn().mockResolvedValue([]),
+    createProfile: vi.fn(),
+    rotateLocalKey: vi.fn(),
+    deleteProfile: vi.fn(),
+  };
+}
 
-  it("keeps the control-plane page set metadata-only", () => {
-    expect("View endpoint, model, status, latency, and category counts only.").not.toContain("provider key");
+describe("desktop single-page shell", () => {
+  it("shows one guided first-run workflow without legacy navigation", async () => {
+    render(<App api={emptyApi()} initialLanguage="en-US" />);
+
+    await waitFor(() => expect(screen.getByText("Add model connection")).toBeTruthy());
+    expect(screen.getByText("Copy local settings")).toBeTruthy();
+    expect(screen.getAllByText("Start protection")).toHaveLength(2);
+    expect(screen.getAllByRole("form")).toHaveLength(1);
+    expect(screen.queryByText("Dashboard")).toBeNull();
+    expect(screen.queryByText("Policies")).toBeNull();
+    expect(screen.queryByText("Test Console")).toBeNull();
+    expect(screen.queryByText("Activity")).toBeNull();
   });
 });

@@ -12,6 +12,25 @@
     "desktop:dev": "tauri dev",
     "desktop:build": "tauri build"
   },
-  "dependencies": { "@tauri-apps/api": "^2.0.0", "react": "^19.0.0", "react-dom": "^19.0.0" },
-  "devDependencies": { "@anthropic-ai/sdk": "0.111.0", "@tauri-apps/cli": "^2.0.0", "@types/node": "^24.0.0", "@types/react": "^19.0.0", "@types/react-dom": "^19.0.0", "@vitejs/plugin-react": "^4.0.0", "openai": "6.46.0", "typescript": "^5.0.0", "vite": "^6.0.0", "vitest": "^3.0.0" }
+  "dependencies": {
+    "@tauri-apps/api": "^2.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@anthropic-ai/sdk": "0.111.0",
+    "@tauri-apps/cli": "^2.0.0",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.0.0",
+    "jsdom": "^29.1.1",
+    "openai": "6.46.0",
+    "typescript": "^5.0.0",
+    "vite": "^6.0.0",
+    "vitest": "^3.0.0"
+  }
 }
