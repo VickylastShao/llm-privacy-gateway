@@ -20,6 +20,8 @@ fn profiles_keep_only_refs_and_activity_metadata() {
     })
     .unwrap_or_else(|e| panic!("save: {e}"));
     repo.record_activity(&Activity {
+        id: Uuid::new_v4(),
+        occurred_at_ms: 1_900_000_000_000,
         profile_id: id,
         endpoint: "/v1/chat/completions".into(),
         model: "deepseek-chat".into(),
@@ -140,5 +142,60 @@ fn encrypted_mapping_records_restore_without_plaintext_storage() {
             .debug_export()
             .unwrap_or_else(|error| panic!("export: {error}"))
             .contains("canary@example.test")
+    );
+}
+
+#[test]
+fn activities_are_newest_first_limited_and_pruned_after_seven_days() {
+    let repository = Repository::open_in_memory().unwrap_or_else(|error| panic!("open: {error}"));
+    let profile = Uuid::nil();
+    repository
+        .save_profile(&ProfileInput {
+            id: profile,
+            name: "activity".into(),
+            protocol: Protocol::OpenAi,
+            upstream_url: "https://example.test/v1".into(),
+            upstream_secret_ref: "upstream/activity".into(),
+            local_secret_ref: "local/activity".into(),
+            local_key_digest: [5; 32],
+            policy: "strict".into(),
+        })
+        .unwrap_or_else(|error| panic!("save: {error}"));
+    let now_ms = 1_900_000_000_000_i64;
+    for (offset, request_id) in [
+        (-(7 * 24 * 60 * 60 * 1_000) - 1, "expired"),
+        (-2_000, "older"),
+        (-1_000, "newer"),
+    ] {
+        repository
+            .record_activity(&Activity {
+                id: Uuid::new_v4(),
+                occurred_at_ms: now_ms + offset,
+                profile_id: profile,
+                endpoint: "/v1/chat/completions".into(),
+                model: "test".into(),
+                status: 200,
+                latency_ms: 1,
+                category_counts: BTreeMap::from([("ipv4".to_owned(), 1)]),
+                actions: vec!["pseudonymize".into()],
+                request_id: request_id.into(),
+            })
+            .unwrap_or_else(|error| panic!("activity: {error}"));
+    }
+
+    repository
+        .prune_activities(now_ms)
+        .unwrap_or_else(|error| panic!("prune: {error}"));
+    let activities = repository
+        .activities(1)
+        .unwrap_or_else(|error| panic!("list: {error}"));
+
+    assert_eq!(activities.len(), 1);
+    assert_eq!(activities[0].request_id, "newer");
+    assert_eq!(
+        repository
+            .activity_count()
+            .unwrap_or_else(|error| panic!("count: {error}")),
+        2
     );
 }

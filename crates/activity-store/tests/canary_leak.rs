@@ -28,6 +28,8 @@ fn plaintext_canaries_are_absent_from_persisted_sqlite_database() {
             .unwrap_or_else(|error| panic!("profile: {error}"));
         repository
             .record_activity(&Activity {
+                id: Uuid::new_v4(),
+                occurred_at_ms: 1_900_000_000_000,
                 profile_id: profile,
                 endpoint: "/v1/chat/completions".to_owned(),
                 model: "test".to_owned(),

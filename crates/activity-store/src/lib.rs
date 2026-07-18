@@ -61,8 +61,10 @@ pub struct Profile {
     pub local_key_digest: [u8; 32],
     pub policy: String,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Activity {
+    pub id: Uuid,
+    pub occurred_at_ms: i64,
     pub profile_id: Uuid,
     pub endpoint: String,
     pub model: String,
@@ -88,7 +90,22 @@ impl Repository {
     }
 
     fn initialize(connection: Connection) -> Result<Self, StoreError> {
-        connection.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY); CREATE TABLE IF NOT EXISTS profiles(id TEXT PRIMARY KEY,name TEXT NOT NULL,protocol TEXT NOT NULL,upstream_url TEXT NOT NULL,upstream_secret_ref TEXT NOT NULL,local_secret_ref TEXT NOT NULL,local_key_digest BLOB NOT NULL,policy TEXT NOT NULL); CREATE TABLE IF NOT EXISTS policy_rules(profile_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,entity_kind TEXT NOT NULL,action TEXT NOT NULL,PRIMARY KEY(profile_id,entity_kind)); CREATE TABLE IF NOT EXISTS pseudonym_records(profile_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,token TEXT NOT NULL,kind TEXT NOT NULL,nonce BLOB NOT NULL,ciphertext BLOB NOT NULL,PRIMARY KEY(profile_id,token)); CREATE TABLE IF NOT EXISTS activities(id INTEGER PRIMARY KEY,profile_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,endpoint TEXT NOT NULL,model TEXT NOT NULL,status INTEGER NOT NULL,latency_ms INTEGER NOT NULL,category_counts TEXT NOT NULL,actions TEXT NOT NULL,request_id TEXT NOT NULL); INSERT OR IGNORE INTO schema_migrations VALUES(1);").map_err(|_| StoreError::Database)?;
+        connection.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY); CREATE TABLE IF NOT EXISTS profiles(id TEXT PRIMARY KEY,name TEXT NOT NULL,protocol TEXT NOT NULL,upstream_url TEXT NOT NULL,upstream_secret_ref TEXT NOT NULL,local_secret_ref TEXT NOT NULL,local_key_digest BLOB NOT NULL,policy TEXT NOT NULL); CREATE TABLE IF NOT EXISTS policy_rules(profile_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,entity_kind TEXT NOT NULL,action TEXT NOT NULL,PRIMARY KEY(profile_id,entity_kind)); CREATE TABLE IF NOT EXISTS pseudonym_records(profile_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,token TEXT NOT NULL,kind TEXT NOT NULL,nonce BLOB NOT NULL,ciphertext BLOB NOT NULL,PRIMARY KEY(profile_id,token)); INSERT OR IGNORE INTO schema_migrations VALUES(1);").map_err(|_| StoreError::Database)?;
+        let has_timestamp = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('activities') WHERE name='occurred_at_ms')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|_| StoreError::Database)?;
+        if !has_timestamp {
+            connection
+                .execute_batch("DROP TABLE IF EXISTS activities; CREATE TABLE activities(id TEXT PRIMARY KEY,occurred_at_ms INTEGER NOT NULL,profile_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,endpoint TEXT NOT NULL,model TEXT NOT NULL,status INTEGER NOT NULL,latency_ms INTEGER NOT NULL,category_counts TEXT NOT NULL,actions TEXT NOT NULL,request_id TEXT NOT NULL); INSERT OR IGNORE INTO schema_migrations VALUES(2);")
+                .map_err(|_| StoreError::Database)?;
+        }
+        connection
+            .execute_batch("CREATE INDEX IF NOT EXISTS activities_occurred_at_idx ON activities(occurred_at_ms DESC,id DESC); INSERT OR IGNORE INTO schema_migrations VALUES(2);")
+            .map_err(|_| StoreError::Database)?;
         Ok(Self { connection })
     }
     pub fn save_profile(&self, input: &ProfileInput) -> Result<(), StoreError> {
@@ -138,7 +155,65 @@ impl Repository {
         let counts =
             serde_json::to_string(&activity.category_counts).map_err(|_| StoreError::Database)?;
         let actions = serde_json::to_string(&activity.actions).map_err(|_| StoreError::Database)?;
-        self.connection.execute("INSERT INTO activities(profile_id,endpoint,model,status,latency_ms,category_counts,actions,request_id) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",params![activity.profile_id.to_string(),activity.endpoint,activity.model,activity.status,activity.latency_ms,counts,actions,activity.request_id]).map_err(|_|StoreError::Database)?;
+        self.connection.execute("INSERT INTO activities(id,occurred_at_ms,profile_id,endpoint,model,status,latency_ms,category_counts,actions,request_id) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![activity.id.to_string(),activity.occurred_at_ms,activity.profile_id.to_string(),activity.endpoint,activity.model,activity.status,activity.latency_ms,counts,actions,activity.request_id]).map_err(|_|StoreError::Database)?;
+        Ok(())
+    }
+
+    pub fn activities(&self, limit: usize) -> Result<Vec<Activity>, StoreError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit.min(100)).map_err(|_| StoreError::Database)?;
+        let mut statement = self.connection.prepare("SELECT id,occurred_at_ms,profile_id,endpoint,model,status,latency_ms,category_counts,actions,request_id FROM activities ORDER BY occurred_at_ms DESC,id DESC LIMIT ?1").map_err(|_| StoreError::Database)?;
+        let rows = statement
+            .query_map([limit], |row| {
+                let raw_id: String = row.get(0)?;
+                let raw_profile_id: String = row.get(2)?;
+                let status: i64 = row.get(5)?;
+                let latency_ms: i64 = row.get(6)?;
+                let category_counts: String = row.get(7)?;
+                let actions: String = row.get(8)?;
+                Ok(Activity {
+                    id: Uuid::parse_str(&raw_id).map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    occurred_at_ms: row.get(1)?,
+                    profile_id: Uuid::parse_str(&raw_profile_id)
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    endpoint: row.get(3)?,
+                    model: row.get(4)?,
+                    status: u16::try_from(status).map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    latency_ms: u64::try_from(latency_ms)
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    category_counts: serde_json::from_str(&category_counts)
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    actions: serde_json::from_str(&actions)
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    request_id: row.get(9)?,
+                })
+            })
+            .map_err(|_| StoreError::Database)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|_| StoreError::Database)
+    }
+
+    pub fn activity_count(&self) -> Result<u64, StoreError> {
+        self.connection
+            .query_row("SELECT COUNT(*) FROM activities", [], |row| {
+                row.get::<_, u64>(0)
+            })
+            .map_err(|_| StoreError::Database)
+    }
+
+    pub fn prune_activities(&self, now_ms: i64) -> Result<(), StoreError> {
+        const RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1_000;
+        self.connection
+            .execute(
+                "DELETE FROM activities WHERE occurred_at_ms < ?1",
+                [now_ms.saturating_sub(RETENTION_MS)],
+            )
+            .map_err(|_| StoreError::Database)?;
+        self.connection
+            .execute("DELETE FROM activities WHERE id IN (SELECT id FROM activities ORDER BY occurred_at_ms DESC,id DESC LIMIT -1 OFFSET 10000)", [])
+            .map_err(|_| StoreError::Database)?;
         Ok(())
     }
 
