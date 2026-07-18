@@ -3,6 +3,19 @@
 version = 4
 
 [[package]]
+name = "activity-service"
+version = "0.1.0"
+dependencies = [
+ "activity-store",
+ "gateway",
+ "privacy-core",
+ "serde",
+ "session-map",
+ "tempfile",
+ "uuid",
+]
+
+[[package]]
 name = "activity-store"
 version = "0.1.0"
 dependencies = [

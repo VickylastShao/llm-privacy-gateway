@@ -203,6 +203,21 @@ impl Repository {
             .map_err(|_| StoreError::Database)
     }
 
+    pub fn activity_ids(&self) -> Result<Vec<Uuid>, StoreError> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT id FROM activities")
+            .map_err(|_| StoreError::Database)?;
+        let rows = statement
+            .query_map([], |row| {
+                let raw_id: String = row.get(0)?;
+                Uuid::parse_str(&raw_id).map_err(|_| rusqlite::Error::InvalidQuery)
+            })
+            .map_err(|_| StoreError::Database)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|_| StoreError::Database)
+    }
+
     pub fn prune_activities(&self, now_ms: i64) -> Result<(), StoreError> {
         const RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1_000;
         self.connection

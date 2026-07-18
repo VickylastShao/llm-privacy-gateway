@@ -1,0 +1,20 @@
+[package]
+name = "activity-service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+activity-store = { path = "../activity-store", version = "0.1.0" }
+gateway = { path = "../gateway", version = "0.1.0" }
+serde.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+privacy-core = { path = "../privacy-core", version = "0.1.0" }
+session-map = { path = "../session-map", version = "0.1.0" }
+tempfile = "3"
+
+[lints]
+workspace = true

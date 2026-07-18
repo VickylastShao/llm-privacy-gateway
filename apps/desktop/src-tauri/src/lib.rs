@@ -3,8 +3,10 @@
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{Arc, Mutex},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
+use activity_service::{ActivityQuery, ActivityService};
 use activity_store::{ProfileInput, Protocol, Repository, validate_upstream_url};
 use gateway::{
     GatewayConfig, GatewayProtocol, GatewayState, RuntimeProfile, local_key_digest,
@@ -82,11 +84,14 @@ struct DesktopState {
     gateway: Arc<Mutex<GatewayControl>>,
     profiles: Arc<Mutex<Vec<DesktopProfile>>>,
     repository: Arc<Mutex<Repository>>,
+    activity: Arc<ActivityService>,
     secrets: Arc<dyn SecretStore>,
 }
 
 impl DesktopState {
     fn open(database_path: &std::path::Path) -> Result<Self, String> {
+        let activity = ActivityService::open(database_path)
+            .map_err(|_| "activity database unavailable")?;
         let repository =
             Repository::open(database_path).map_err(|_| "profile database unavailable")?;
         let secrets = default_secret_store();
@@ -133,6 +138,7 @@ impl DesktopState {
             gateway: Arc::new(Mutex::new(GatewayControl::default())),
             profiles: Arc::new(Mutex::new(profiles)),
             repository: Arc::new(Mutex::new(repository)),
+            activity,
             secrets,
         })
     }
@@ -185,7 +191,8 @@ fn start_gateway(state: State<'_, DesktopState>) -> Result<GatewayStatus, String
         runtime_profiles.push(runtime);
     }
     drop(profiles);
-    let runtime = GatewayState::new(runtime_profiles).map_err(|_| "gateway setup failed")?;
+    let runtime = GatewayState::new_with_sink(runtime_profiles, state.activity.clone())
+        .map_err(|_| "gateway setup failed")?;
     let config = GatewayConfig::new(SocketAddr::new(
         IpAddr::V4(Ipv4Addr::LOCALHOST),
         LOCAL_GATEWAY_PORT,
@@ -445,8 +452,14 @@ fn transform_preview(text: String) -> serde_json::Value {
 }
 
 #[tauri::command]
-fn query_activity() -> Vec<serde_json::Value> {
-    Vec::new()
+fn query_activity(
+    limit: usize,
+    state: State<'_, DesktopState>,
+) -> Result<ActivityQuery, String> {
+    state
+        .activity
+        .query(limit, current_time_ms())
+        .map_err(|_| "activity database unavailable".to_owned())
 }
 
 #[tauri::command]
@@ -480,6 +493,14 @@ fn local_base_url(protocol: &GatewayProtocol) -> String {
     }
 }
 
+fn current_time_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| i64::try_from(duration.as_millis()).ok())
+        .unwrap_or(0)
+}
+
 fn encode_mapping_key(key: [u8; 32]) -> String {
     key.iter().map(|byte| format!("{byte:02x}")).collect()
 }
@@ -492,56 +513,6 @@ fn decode_mapping_key(value: &str) -> Result<[u8; 32], ()> {
         *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16).map_err(|_| ())?;
     }
     Ok(output)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn create_profile_uses_protocol_for_local_url_after_persisting() {
-        let directory = std::env::temp_dir().join(format!("lpg-desktop-test-{}", Uuid::new_v4()));
-        let created_directory = std::fs::create_dir_all(&directory);
-        assert!(created_directory.is_ok());
-        let repository = match Repository::open(&directory.join("profiles.sqlite")) {
-            Ok(repository) => repository,
-            Err(error) => panic!("open test repository: {error}"),
-        };
-        let state = DesktopState {
-            gateway: Arc::new(Mutex::new(GatewayControl::default())),
-            profiles: Arc::new(Mutex::new(Vec::new())),
-            repository: Arc::new(Mutex::new(repository)),
-            secrets: Arc::new(MemorySecretStore::default()),
-        };
-
-        let created = match create_profile_with_state(
-            ProfileDraft {
-                name: "fixture".to_owned(),
-                protocol: "openai".to_owned(),
-                upstream_url: "https://api.example.test".to_owned(),
-                upstream_key: "fixture-upstream-key".to_owned(),
-                policy: "balanced".to_owned(),
-            },
-            &state,
-        ) {
-            Ok(created) => created,
-            Err(error) => panic!("create profile: {error}"),
-        };
-
-        assert_eq!(created.profile.protocol, "openai");
-        assert_eq!(
-            created.local_base_url,
-            format!("http://127.0.0.1:{LOCAL_GATEWAY_PORT}/v1")
-        );
-        let profile_count = match state.profiles.lock() {
-            Ok(profiles) => profiles.len(),
-            Err(error) => panic!("read created profiles: {error}"),
-        };
-        assert_eq!(profile_count, 1);
-        drop(state);
-        let removed_directory = std::fs::remove_dir_all(directory);
-        assert!(removed_directory.is_ok());
-    }
 }
 
 pub fn run() {
@@ -609,4 +580,60 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|error| panic!("Tauri startup failed: {error}"));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn create_profile_uses_protocol_for_local_url_after_persisting() {
+        let directory = std::env::temp_dir().join(format!("lpg-desktop-test-{}", Uuid::new_v4()));
+        let created_directory = std::fs::create_dir_all(&directory);
+        assert!(created_directory.is_ok());
+        let database_path = directory.join("profiles.sqlite");
+        let repository = match Repository::open(&database_path) {
+            Ok(repository) => repository,
+            Err(error) => panic!("open test repository: {error}"),
+        };
+        let activity = match ActivityService::open(&database_path) {
+            Ok(activity) => activity,
+            Err(error) => panic!("open activity service: {error}"),
+        };
+        let state = DesktopState {
+            gateway: Arc::new(Mutex::new(GatewayControl::default())),
+            profiles: Arc::new(Mutex::new(Vec::new())),
+            repository: Arc::new(Mutex::new(repository)),
+            activity,
+            secrets: Arc::new(MemorySecretStore::default()),
+        };
+
+        let created = match create_profile_with_state(
+            ProfileDraft {
+                name: "fixture".to_owned(),
+                protocol: "openai".to_owned(),
+                upstream_url: "https://api.example.test".to_owned(),
+                upstream_key: "fixture-upstream-key".to_owned(),
+                policy: "balanced".to_owned(),
+            },
+            &state,
+        ) {
+            Ok(created) => created,
+            Err(error) => panic!("create profile: {error}"),
+        };
+
+        assert_eq!(created.profile.protocol, "openai");
+        assert_eq!(
+            created.local_base_url,
+            format!("http://127.0.0.1:{LOCAL_GATEWAY_PORT}/v1")
+        );
+        let profile_count = match state.profiles.lock() {
+            Ok(profiles) => profiles.len(),
+            Err(error) => panic!("read created profiles: {error}"),
+        };
+        assert_eq!(profile_count, 1);
+        drop(state);
+        let removed_directory = std::fs::remove_dir_all(directory);
+        assert!(removed_directory.is_ok());
+    }
 }

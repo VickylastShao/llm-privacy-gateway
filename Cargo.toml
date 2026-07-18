@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "apps/cli",
     "crates/activity-store",
+    "crates/activity-service",
     "crates/gateway",
     "crates/privacy-core",
     "crates/protocol-anthropic",

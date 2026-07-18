@@ -21,7 +21,8 @@ crates/protocol-anthropic/src/messages.rs         Request-report aggregation wit
 crates/gateway/src/activity.rs                    ActivityEvent and ActivitySink contract
 crates/gateway/src/{runtime,server}.rs             Sink injection and final request event publication
 crates/activity-store/src/lib.rs                  Schema v2, retention, newest-first queries
-apps/desktop/src-tauri/src/activity.rs             Session previews and background persistence
+crates/activity-service/src/lib.rs                  Session previews and background persistence
+crates/activity-service/tests/service.rs            Cross-platform lifecycle and data-safety tests
 apps/desktop/src-tauri/src/lib.rs                  Service setup and query_activity command
 apps/desktop/src/model.ts                          Activity API types
 apps/desktop/src/desktop-api.ts                    Activity query bridge

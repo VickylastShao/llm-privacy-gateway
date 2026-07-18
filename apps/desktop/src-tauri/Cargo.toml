@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+activity-service = { path = "../../../crates/activity-service" }
 activity-store = { path = "../../../crates/activity-store" }
 gateway = { path = "../../../crates/gateway", version = "0.1.0" }
 privacy-core = { path = "../../../crates/privacy-core", version = "0.1.0" }
