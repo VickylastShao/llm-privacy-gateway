@@ -217,4 +217,26 @@ describe("desktop single-page shell", () => {
     await waitFor(() => expect(api.stopGateway).toHaveBeenCalledOnce());
     expect(screen.getByText("Protection off")).toBeTruthy();
   });
+
+  it("uses modal confirmation semantics and accessible icon controls", async () => {
+    const user = userEvent.setup();
+    render(<App api={emptyApi([profile])} initialLanguage="en-US" />);
+
+    expect(await screen.findByRole("button", { name: "More actions for DeepSeek" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Add connection" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "More actions for DeepSeek" }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete connection" }));
+    expect(screen.getByRole("dialog").getAttribute("aria-modal")).toBe("true");
+  });
+
+  it("renders an unknown runtime error as text rather than markup", async () => {
+    const user = userEvent.setup();
+    const api = emptyApi([profile]);
+    vi.mocked(api.startGateway).mockRejectedValue("<img src=x onerror=alert(1)>");
+    const { container } = render(<App api={api} initialLanguage="en-US" />);
+
+    await user.click(await screen.findByRole("button", { name: "Start protection" }));
+    expect(await screen.findByText("<img src=x onerror=alert(1)>")).toBeTruthy();
+    expect(container.querySelector("img")).toBeNull();
+  });
 });

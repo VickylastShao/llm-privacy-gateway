@@ -27,7 +27,7 @@ export function ConfirmDialog({
   const confirm = action === "rotate" ? t("confirmRotate") : t("confirmDelete");
 
   return (
-    <dialog aria-labelledby="confirm-title" className="confirm-dialog" open>
+    <dialog aria-labelledby="confirm-title" aria-modal="true" className="confirm-dialog" open>
       <h2 id="confirm-title">{title}</h2>
       <p>{description}</p>
       {blocked && <p className="blocked-message">{t("stopBeforeChange")}</p>}
