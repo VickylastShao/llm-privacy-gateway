@@ -7,4 +7,8 @@
 - Verify loopback binding, upgrade persistence, key rotation, profile deletion, and credential-removal behavior on clean Windows.
 - Install the generated NSIS package and launch the Start Menu shortcut. Confirm the main window opens without a console or `conhost.exe` window.
 - Repeat a debug launch and confirm console diagnostics remain available to developers.
+- Send synthetic blocked and transformed requests and confirm their privacy activity appears without raw canary values.
+- Restart the desktop app and confirm seven-day activity metadata remains while session-only previews are gone.
+- Confirm persistence failures produce a visible activity warning without changing gateway responses.
+- Inspect the SQLite database and confirm request bodies, response bodies, original matches, and preview values are absent.
 - Publish exact SDK versions and supported route limitations.
