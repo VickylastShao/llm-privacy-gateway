@@ -1,6 +1,7 @@
-use privacy_core::{Policy, PrivacyEngine, StaticDictionary};
+use privacy_core::{Policy, PrivacyEngine, RequestPrivacyReport, StaticDictionary};
 use protocol_anthropic::{
     restore_messages_response_raw, transform_messages_request, transform_messages_request_raw,
+    transform_messages_request_raw_with_report,
 };
 use serde_json::json;
 use session_map::{MemoryBackend, PseudonymMap};
@@ -66,4 +67,31 @@ fn raw_response_adapter_restores_text_and_keeps_signed_thinking_bytes() {
     assert!(output.contains(signed));
     assert!(output.contains("alice@example.test"));
     assert!(!output.contains(&token));
+}
+
+#[test]
+fn raw_adapter_aggregates_report_without_reserializing_signed_thinking() {
+    let engine = PrivacyEngine::new(
+        Vec::new(),
+        StaticDictionary::new(["Alpha Project"])
+            .unwrap_or_else(|error| panic!("dictionary: {error}")),
+    );
+    let mut map = PseudonymMap::new(Uuid::nil(), [19; 32], MemoryBackend::default());
+    let signed = r#"{ "type" : "thinking", "thinking" : "opaque", "signature" : "sig==" }"#;
+    let request = format!(
+        r#"{{"system":"Alpha Project","messages":[{{"role":"assistant","content":[{signed},{{"type":"tool_result","tool_use_id":"u1","content":"Alpha Project"}}]}}]}}"#
+    );
+    let mut report = RequestPrivacyReport::default();
+
+    let output = transform_messages_request_raw_with_report(
+        &request,
+        &engine,
+        &Policy::strict(),
+        &mut map,
+        &mut report,
+    )
+    .unwrap_or_else(|error| panic!("transform: {error}"));
+
+    assert!(output.contains(signed));
+    assert_eq!(report.category_counts().get("custom"), Some(&2));
 }

@@ -1,4 +1,4 @@
-use privacy_core::{Policy, PrivacyEngine};
+use privacy_core::{Policy, PrivacyEngine, RequestPrivacyReport};
 use serde_json::{Value, value::RawValue};
 use session_map::{MappingBackend, PseudonymMap, Pseudonymizer};
 use std::collections::BTreeMap;
@@ -20,13 +20,35 @@ pub fn transform_messages_request_raw<P: Pseudonymizer>(
     policy: &Policy,
     map: &mut P,
 ) -> Result<String, AnthropicProtocolError> {
+    transform_messages_request_raw_with_report(
+        input,
+        engine,
+        policy,
+        map,
+        &mut RequestPrivacyReport::default(),
+    )
+}
+
+pub fn transform_messages_request_raw_with_report<P: Pseudonymizer>(
+    input: &str,
+    engine: &PrivacyEngine,
+    policy: &Policy,
+    map: &mut P,
+    report: &mut RequestPrivacyReport,
+) -> Result<String, AnthropicProtocolError> {
     let mut request: BTreeMap<String, Box<RawValue>> =
         serde_json::from_str(input).map_err(|_| AnthropicProtocolError::Json)?;
 
     if let Some(system) = request.remove("system") {
         request.insert(
             "system".to_owned(),
-            raw_value(transform_raw_content(system.get(), engine, policy, map)?)?,
+            raw_value(transform_raw_content(
+                system.get(),
+                engine,
+                policy,
+                map,
+                report,
+            )?)?,
         );
     }
     if let Some(messages) = request.remove("messages") {
@@ -34,7 +56,9 @@ pub fn transform_messages_request_raw<P: Pseudonymizer>(
             serde_json::from_str(messages.get()).map_err(|_| AnthropicProtocolError::Json)?;
         let mut transformed = Vec::with_capacity(messages.len());
         for message in messages {
-            transformed.push(transform_raw_message(&message, engine, policy, map)?);
+            transformed.push(transform_raw_message(
+                &message, engine, policy, map, report,
+            )?);
         }
         request.insert(
             "messages".to_owned(),
@@ -74,13 +98,29 @@ pub fn transform_messages_request<P: Pseudonymizer>(
     policy: &Policy,
     map: &mut P,
 ) -> Result<(), AnthropicProtocolError> {
+    transform_messages_request_with_report(
+        request,
+        engine,
+        policy,
+        map,
+        &mut RequestPrivacyReport::default(),
+    )
+}
+
+pub fn transform_messages_request_with_report<P: Pseudonymizer>(
+    request: &mut Value,
+    engine: &PrivacyEngine,
+    policy: &Policy,
+    map: &mut P,
+    report: &mut RequestPrivacyReport,
+) -> Result<(), AnthropicProtocolError> {
     if let Some(system) = request.get_mut("system") {
-        transform_content(system, engine, policy, map)?;
+        transform_content(system, engine, policy, map, report)?;
     }
     if let Some(messages) = request.get_mut("messages").and_then(Value::as_array_mut) {
         for message in messages {
             if let Some(content) = message.get_mut("content") {
-                transform_content(content, engine, policy, map)?;
+                transform_content(content, engine, policy, map, report)?;
             }
         }
     }
@@ -92,11 +132,12 @@ fn transform_content<P: Pseudonymizer>(
     engine: &PrivacyEngine,
     policy: &Policy,
     map: &mut P,
+    report: &mut RequestPrivacyReport,
 ) -> Result<(), AnthropicProtocolError> {
     match content {
         Value::String(text) => {
             *text = engine
-                .transform(text, policy, map)
+                .transform_reported(text, policy, map, report)
                 .map_err(|_| AnthropicProtocolError::Privacy)?
                 .outbound_text()
                 .to_owned();
@@ -104,9 +145,13 @@ fn transform_content<P: Pseudonymizer>(
         Value::Array(blocks) => {
             for block in blocks {
                 match block.get("type").and_then(Value::as_str) {
-                    Some("text") => transform_field(block, "text", engine, policy, map)?,
-                    Some("tool_result") => transform_field(block, "content", engine, policy, map)?,
-                    Some("tool_use") => transform_field(block, "input", engine, policy, map)?,
+                    Some("text") => transform_field(block, "text", engine, policy, map, report)?,
+                    Some("tool_result") => {
+                        transform_field(block, "content", engine, policy, map, report)?
+                    }
+                    Some("tool_use") => {
+                        transform_field(block, "input", engine, policy, map, report)?
+                    }
                     _ => {}
                 }
             }
@@ -121,13 +166,20 @@ fn transform_raw_message<P: Pseudonymizer>(
     engine: &PrivacyEngine,
     policy: &Policy,
     map: &mut P,
+    report: &mut RequestPrivacyReport,
 ) -> Result<Box<RawValue>, AnthropicProtocolError> {
     let mut message: BTreeMap<String, Box<RawValue>> =
         serde_json::from_str(message.get()).map_err(|_| AnthropicProtocolError::Json)?;
     if let Some(content) = message.remove("content") {
         message.insert(
             "content".to_owned(),
-            raw_value(transform_raw_content(content.get(), engine, policy, map)?)?,
+            raw_value(transform_raw_content(
+                content.get(),
+                engine,
+                policy,
+                map,
+                report,
+            )?)?,
         );
     }
     raw_value(serde_json::to_string(&message).map_err(|_| AnthropicProtocolError::Json)?)
@@ -138,12 +190,13 @@ fn transform_raw_content<P: Pseudonymizer>(
     engine: &PrivacyEngine,
     policy: &Policy,
     map: &mut P,
+    report: &mut RequestPrivacyReport,
 ) -> Result<String, AnthropicProtocolError> {
     let value: Value = serde_json::from_str(content).map_err(|_| AnthropicProtocolError::Json)?;
     match value {
         Value::String(text) => serde_json::to_string(
             engine
-                .transform(&text, policy, map)
+                .transform_reported(&text, policy, map, report)
                 .map_err(|_| AnthropicProtocolError::Privacy)?
                 .outbound_text(),
         )
@@ -153,7 +206,7 @@ fn transform_raw_content<P: Pseudonymizer>(
                 serde_json::from_str(content).map_err(|_| AnthropicProtocolError::Json)?;
             let mut transformed = Vec::with_capacity(blocks.len());
             for block in blocks {
-                transformed.push(transform_raw_block(block, engine, policy, map)?);
+                transformed.push(transform_raw_block(block, engine, policy, map, report)?);
             }
             serde_json::to_string(&transformed).map_err(|_| AnthropicProtocolError::Json)
         }
@@ -166,13 +219,14 @@ fn transform_raw_block<P: Pseudonymizer>(
     engine: &PrivacyEngine,
     policy: &Policy,
     map: &mut P,
+    report: &mut RequestPrivacyReport,
 ) -> Result<Box<RawValue>, AnthropicProtocolError> {
     let mut value: Value =
         serde_json::from_str(block.get()).map_err(|_| AnthropicProtocolError::Json)?;
     match value.get("type").and_then(Value::as_str) {
-        Some("text") => transform_field(&mut value, "text", engine, policy, map)?,
-        Some("tool_result") => transform_field(&mut value, "content", engine, policy, map)?,
-        Some("tool_use") => transform_field(&mut value, "input", engine, policy, map)?,
+        Some("text") => transform_field(&mut value, "text", engine, policy, map, report)?,
+        Some("tool_result") => transform_field(&mut value, "content", engine, policy, map, report)?,
+        Some("tool_use") => transform_field(&mut value, "input", engine, policy, map, report)?,
         // Thinking, redacted_thinking, image and unknown blocks must remain raw. Anthropic
         // signatures are tied to the original serialized block rather than its JSON meaning.
         _ => return Ok(block),
@@ -212,6 +266,7 @@ fn transform_field<P: Pseudonymizer>(
     engine: &PrivacyEngine,
     policy: &Policy,
     map: &mut P,
+    report: &mut RequestPrivacyReport,
 ) -> Result<(), AnthropicProtocolError> {
     let Some(value) = block.get_mut(key) else {
         return Ok(());
@@ -219,7 +274,7 @@ fn transform_field<P: Pseudonymizer>(
     if let Some(text) = value.as_str() {
         *value = Value::String(
             engine
-                .transform(text, policy, map)
+                .transform_reported(text, policy, map, report)
                 .map_err(|_| AnthropicProtocolError::Privacy)?
                 .outbound_text()
                 .to_owned(),

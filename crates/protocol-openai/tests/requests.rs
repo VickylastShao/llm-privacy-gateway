@@ -1,5 +1,8 @@
-use privacy_core::{Policy, PrivacyEngine, StaticDictionary};
-use protocol_openai::{restore_chat_response, transform_chat_request, transform_responses_request};
+use privacy_core::{Policy, PrivacyEngine, RequestPrivacyReport, StaticDictionary};
+use protocol_openai::{
+    restore_chat_response, transform_chat_request, transform_chat_request_with_report,
+    transform_responses_request, transform_responses_request_with_report,
+};
 use serde_json::json;
 use session_map::{MemoryBackend, PseudonymMap};
 use uuid::Uuid;
@@ -82,4 +85,32 @@ fn chat_response_restores_message_and_reasoning_text() {
         response["choices"][0]["message"]["reasoning_content"],
         "repeat alice@example.test"
     );
+}
+
+#[test]
+fn openai_adapters_aggregate_all_approved_fields_into_one_report() {
+    let (engine, mut map) = setup();
+    let mut chat = json!({"messages":[{"role":"user","content":"Alpha Project","tool_calls":[{"function":{"arguments":"Alpha Project"}}]}]});
+    let mut chat_report = RequestPrivacyReport::default();
+    transform_chat_request_with_report(
+        &mut chat,
+        &engine,
+        &Policy::strict(),
+        &mut map,
+        &mut chat_report,
+    )
+    .unwrap_or_else(|error| panic!("chat transform: {error}"));
+    assert_eq!(chat_report.category_counts().get("custom"), Some(&2));
+
+    let mut responses = json!({"instructions":"Alpha Project","input":[{"type":"message","content":[{"type":"input_text","text":"Alpha Project"}]},{"type":"function_call_output","output":"Alpha Project"}]});
+    let mut responses_report = RequestPrivacyReport::default();
+    transform_responses_request_with_report(
+        &mut responses,
+        &engine,
+        &Policy::strict(),
+        &mut map,
+        &mut responses_report,
+    )
+    .unwrap_or_else(|error| panic!("responses transform: {error}"));
+    assert_eq!(responses_report.category_counts().get("custom"), Some(&3));
 }

@@ -1,4 +1,4 @@
-use privacy_core::{Policy, PrivacyEngine};
+use privacy_core::{Policy, PrivacyEngine, RequestPrivacyReport};
 use serde_json::Value;
 use session_map::Pseudonymizer;
 
@@ -10,11 +10,27 @@ pub fn transform_chat_request<P: Pseudonymizer>(
     policy: &Policy,
     map: &mut P,
 ) -> Result<(), OpenAiProtocolError> {
+    transform_chat_request_with_report(
+        request,
+        engine,
+        policy,
+        map,
+        &mut RequestPrivacyReport::default(),
+    )
+}
+
+pub fn transform_chat_request_with_report<P: Pseudonymizer>(
+    request: &mut Value,
+    engine: &PrivacyEngine,
+    policy: &Policy,
+    map: &mut P,
+    report: &mut RequestPrivacyReport,
+) -> Result<(), OpenAiProtocolError> {
     let Some(messages) = request.get_mut("messages").and_then(Value::as_array_mut) else {
         return Ok(());
     };
     for message in messages {
-        transform_message(message, engine, policy, map)?;
+        transform_message(message, engine, policy, map, report)?;
     }
     Ok(())
 }
@@ -24,9 +40,10 @@ fn transform_message<P: Pseudonymizer>(
     engine: &PrivacyEngine,
     policy: &Policy,
     map: &mut P,
+    report: &mut RequestPrivacyReport,
 ) -> Result<(), OpenAiProtocolError> {
     if let Some(content) = message.get_mut("content") {
-        transform_content(content, engine, policy, map)?;
+        transform_content(content, engine, policy, map, report)?;
     }
     if let Some(calls) = message.get_mut("tool_calls").and_then(Value::as_array_mut) {
         for call in calls {
@@ -38,7 +55,7 @@ fn transform_message<P: Pseudonymizer>(
                     continue;
                 };
                 let transformed = engine
-                    .transform(arguments, policy, map)
+                    .transform_reported(arguments, policy, map, report)
                     .map_err(|_| OpenAiProtocolError::Privacy)?;
                 *arguments_value = Value::String(transformed.outbound_text().to_owned());
             }
@@ -52,11 +69,12 @@ fn transform_content<P: Pseudonymizer>(
     engine: &PrivacyEngine,
     policy: &Policy,
     map: &mut P,
+    report: &mut RequestPrivacyReport,
 ) -> Result<(), OpenAiProtocolError> {
     match content {
         Value::String(text) => {
             *text = engine
-                .transform(text, policy, map)
+                .transform_reported(text, policy, map, report)
                 .map_err(|_| OpenAiProtocolError::Privacy)?
                 .outbound_text()
                 .to_owned();
@@ -72,7 +90,7 @@ fn transform_content<P: Pseudonymizer>(
                         continue;
                     };
                     let transformed = engine
-                        .transform(text, policy, map)
+                        .transform_reported(text, policy, map, report)
                         .map_err(|_| OpenAiProtocolError::Privacy)?;
                     *text_value = Value::String(transformed.outbound_text().to_owned());
                 }
