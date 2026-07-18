@@ -3,13 +3,25 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import type { DesktopApi } from "./desktop-api";
+import type { GatewayStatus, ProfileSummary } from "./model";
 
-function emptyApi(): DesktopApi {
+const profile: ProfileSummary = {
+  id: "profile-1",
+  name: "DeepSeek",
+  protocol: "openai",
+  upstream_url: "https://api.deepseek.com",
+  policy: "strict",
+};
+
+function emptyApi(
+  profiles: ProfileSummary[] = [],
+  status: GatewayStatus = { running: false },
+): DesktopApi {
   return {
-    gatewayStatus: vi.fn().mockResolvedValue({ running: false }),
+    gatewayStatus: vi.fn().mockResolvedValue(status),
     startGateway: vi.fn().mockResolvedValue({ running: true }),
     stopGateway: vi.fn().mockResolvedValue({ running: false }),
-    listProfiles: vi.fn().mockResolvedValue([]),
+    listProfiles: vi.fn().mockResolvedValue(profiles),
     createProfile: vi.fn(),
     rotateLocalKey: vi.fn(),
     deleteProfile: vi.fn(),
@@ -104,5 +116,105 @@ describe("desktop single-page shell", () => {
     expect(await screen.findByText("lpg_local_once")).toBeTruthy();
     const result = screen.getByRole("region", { name: "Copy these local settings now" });
     expect(document.activeElement).toBe(result);
+  });
+
+  it("shows a persistent connection card without revealing either key", async () => {
+    const user = userEvent.setup();
+    const api = emptyApi([profile]);
+    render(<App api={api} initialLanguage="en-US" />);
+
+    expect(await screen.findByText("DeepSeek")).toBeTruthy();
+    expect(screen.getByText("https://api.deepseek.com")).toBeTruthy();
+    expect(screen.getByText("http://127.0.0.1:17891/v1")).toBeTruthy();
+    expect(screen.getByText("Strict")).toBeTruthy();
+    expect(screen.queryByText(/lpg_local_/)).toBeNull();
+    expect(screen.queryByText(/test-upstream-key/)).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Copy local Base URL" }));
+    expect(await navigator.clipboard.readText()).toBe("http://127.0.0.1:17891/v1");
+  });
+
+  it("uses an accessible dismissible overflow menu with only low-frequency actions", async () => {
+    const user = userEvent.setup();
+    render(<App api={emptyApi([profile])} initialLanguage="en-US" />);
+    const trigger = await screen.findByRole("button", { name: "More actions for DeepSeek" });
+
+    await user.click(trigger);
+    expect(screen.getByRole("menuitem", { name: "Rotate local key" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Delete connection" })).toBeTruthy();
+    expect(screen.getAllByRole("menuitem")).toHaveLength(2);
+    expect(document.querySelector("select")).toBeNull();
+    expect(screen.queryByRole("navigation")).toBeNull();
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+
+    await user.click(trigger);
+    await user.click(document.body);
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("rotates a local key and exposes the replacement only once", async () => {
+    const user = userEvent.setup();
+    const api = emptyApi([profile]);
+    vi.mocked(api.rotateLocalKey).mockResolvedValue({
+      profile_id: profile.id,
+      local_key: "lpg_local_rotated",
+    });
+    render(<App api={api} initialLanguage="en-US" />);
+
+    await user.click(await screen.findByRole("button", { name: "More actions for DeepSeek" }));
+    await user.click(screen.getByRole("menuitem", { name: "Rotate local key" }));
+    expect(screen.getByRole("dialog", { name: "Rotate the local key?" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Rotate key" }));
+
+    await waitFor(() => expect(api.rotateLocalKey).toHaveBeenCalledWith(profile.id));
+    expect(await screen.findByText("lpg_local_rotated")).toBeTruthy();
+  });
+
+  it("deletes a connection only after confirmation", async () => {
+    const user = userEvent.setup();
+    const api = emptyApi([profile]);
+    vi.mocked(api.deleteProfile).mockResolvedValue(undefined);
+    render(<App api={api} initialLanguage="en-US" />);
+
+    await user.click(await screen.findByRole("button", { name: "More actions for DeepSeek" }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete connection" }));
+    expect(screen.getByRole("dialog", { name: "Delete DeepSeek?" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Delete connection" }));
+
+    await waitFor(() => expect(api.deleteProfile).toHaveBeenCalledWith(profile.id));
+    expect(screen.queryByText("DeepSeek")).toBeNull();
+  });
+
+  it("requires protection to stop before a destructive action", async () => {
+    const user = userEvent.setup();
+    const api = emptyApi([profile], { running: true });
+    render(<App api={api} initialLanguage="en-US" />);
+
+    await user.click(await screen.findByRole("button", { name: "More actions for DeepSeek" }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete connection" }));
+
+    expect(screen.getByText("Stop protection before changing connections.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Delete connection" })).toHaveProperty(
+      "disabled",
+      true,
+    );
+    expect(api.deleteProfile).not.toHaveBeenCalled();
+  });
+
+  it("starts and stops protection from the single primary control", async () => {
+    const user = userEvent.setup();
+    const api = emptyApi([profile]);
+    render(<App api={api} initialLanguage="en-US" />);
+
+    await user.click(await screen.findByRole("button", { name: "Start protection" }));
+    await waitFor(() => expect(api.startGateway).toHaveBeenCalledOnce());
+    expect(screen.getByText("Protection on")).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "Stop protection" }));
+    await waitFor(() => expect(api.stopGateway).toHaveBeenCalledOnce());
+    expect(screen.getByText("Protection off")).toBeTruthy();
   });
 });

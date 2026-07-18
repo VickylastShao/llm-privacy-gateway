@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { ConfirmDialog, type ProfileAction } from "./components/ConfirmDialog";
+import { ConnectionCard } from "./components/ConnectionCard";
 import { ConnectionForm } from "./components/ConnectionForm";
 import { OneTimeSecret } from "./components/OneTimeSecret";
 import { desktopApi, type DesktopApi } from "./desktop-api";
@@ -10,7 +12,13 @@ import {
   type Locale,
   type TranslationKey,
 } from "./i18n";
-import type { CreatedProfile, GatewayStatus, ProfileDraft, ProfileSummary } from "./model";
+import {
+  localBaseUrl,
+  type CreatedProfile,
+  type GatewayStatus,
+  type ProfileDraft,
+  type ProfileSummary,
+} from "./model";
 
 type DisplayError = { summary: string; detail?: string };
 
@@ -24,9 +32,16 @@ export function App({
   const [locale, setLocale] = useState<Locale>(() => initialLocale(initialLanguage));
   const [status, setStatus] = useState<GatewayStatus>({ running: false });
   const [profiles, setProfiles] = useState<ProfileSummary[]>([]);
+  const [profilesLoaded, setProfilesLoaded] = useState(false);
+  const [showForm, setShowForm] = useState(true);
   const [created, setCreated] = useState<CreatedProfile | null>(null);
   const [error, setError] = useState<DisplayError | null>(null);
   const [gatewayPending, setGatewayPending] = useState(false);
+  const [profileAction, setProfileAction] = useState<{
+    action: ProfileAction;
+    profile: ProfileSummary;
+  } | null>(null);
+  const [profileActionPending, setProfileActionPending] = useState(false);
   const t = (key: TranslationKey, values?: Record<string, string>) =>
     translate(locale, key, values);
 
@@ -34,7 +49,14 @@ export function App({
 
   useEffect(() => {
     void api.gatewayStatus().then(setStatus).catch(reportError);
-    void api.listProfiles().then(setProfiles).catch(reportError);
+    void api
+      .listProfiles()
+      .then((next) => {
+        setProfiles(next);
+        setShowForm(next.length === 0);
+      })
+      .catch(reportError)
+      .finally(() => setProfilesLoaded(true));
   }, [api]);
 
   const changeLocale = (nextLocale: Locale) => {
@@ -60,10 +82,38 @@ export function App({
       const next = await api.createProfile(draft);
       setProfiles((current) => [...current, next.profile]);
       setCreated(next);
+      setShowForm(false);
       setError(null);
     } catch (cause) {
       reportError(cause);
       throw cause;
+    }
+  };
+
+  const confirmProfileAction = async () => {
+    if (!profileAction || status.running) return;
+    setProfileActionPending(true);
+    try {
+      if (profileAction.action === "rotate") {
+        const rotated = await api.rotateLocalKey(profileAction.profile.id);
+        setCreated({
+          profile: profileAction.profile,
+          local_base_url: localBaseUrl(profileAction.profile.protocol),
+          local_key: rotated.local_key,
+        });
+      } else {
+        await api.deleteProfile(profileAction.profile.id);
+        setProfiles((current) =>
+          current.filter((profile) => profile.id !== profileAction.profile.id),
+        );
+        setShowForm(profiles.length === 1);
+      }
+      setError(null);
+      setProfileAction(null);
+    } catch (cause) {
+      reportError(cause);
+    } finally {
+      setProfileActionPending(false);
     }
   };
 
@@ -137,14 +187,32 @@ export function App({
               <h2 id="connections-title">{t("connectionsTitle")}</h2>
               <p>{t("connectionsDescription")}</p>
             </div>
+            {profiles.length > 0 && !showForm && (
+              <button onClick={() => setShowForm(true)} type="button">
+                {t("addConnection")}
+              </button>
+            )}
           </div>
-          <ConnectionForm onSubmit={createProfile} t={t} />
+          {profilesLoaded && showForm && (
+            <ConnectionForm
+              onCancel={profiles.length > 0 ? () => setShowForm(false) : undefined}
+              onSubmit={createProfile}
+              t={t}
+            />
+          )}
           {profiles.length > 0 && (
-            <ul aria-label={t("connectionList")}>
+            <div aria-label={t("connectionList")} className="connection-grid" role="list">
               {profiles.map((profile) => (
-                <li key={profile.id}>{profile.name}</li>
+                <div key={profile.id} role="listitem">
+                  <ConnectionCard
+                    onDelete={() => setProfileAction({ action: "delete", profile })}
+                    onRotate={() => setProfileAction({ action: "rotate", profile })}
+                    profile={profile}
+                    t={t}
+                  />
+                </div>
               ))}
-            </ul>
+            </div>
           )}
         </section>
 
@@ -161,6 +229,17 @@ export function App({
           </div>
         )}
       </div>
+      {profileAction && (
+        <ConfirmDialog
+          action={profileAction.action}
+          blocked={status.running}
+          onCancel={() => setProfileAction(null)}
+          onConfirm={() => void confirmProfileAction()}
+          pending={profileActionPending}
+          profile={profileAction.profile}
+          t={t}
+        />
+      )}
     </main>
   );
 }
