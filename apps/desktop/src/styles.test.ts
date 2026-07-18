@@ -13,6 +13,7 @@ describe("desktop visual system", () => {
     expect(styles).toContain(":focus-visible");
     expect(styles).toContain(".segmented");
     expect(styles).toContain(".overflow-menu");
+    expect(styles).toContain(".activity-list");
     expect(styles).toContain("@media (max-width: 760px)");
     expect(styles).toContain("prefers-reduced-motion: reduce");
   });

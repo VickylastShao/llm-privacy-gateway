@@ -3,6 +3,7 @@ import { ConfirmDialog, type ProfileAction } from "./components/ConfirmDialog";
 import { ConnectionCard } from "./components/ConnectionCard";
 import { ConnectionForm } from "./components/ConnectionForm";
 import { OneTimeSecret } from "./components/OneTimeSecret";
+import { PrivacyActivity } from "./components/PrivacyActivity";
 import { desktopApi, type DesktopApi } from "./desktop-api";
 import {
   initialLocale,
@@ -17,6 +18,7 @@ import {
   type CreatedProfile,
   type GatewayStatus,
   type ProfileDraft,
+  type PrivacyActivityResponse,
   type ProfileSummary,
 } from "./model";
 
@@ -42,6 +44,9 @@ export function App({
     profile: ProfileSummary;
   } | null>(null);
   const [profileActionPending, setProfileActionPending] = useState(false);
+  const [activity, setActivity] = useState<PrivacyActivityResponse | null>(null);
+  const [activityError, setActivityError] = useState(false);
+  const [activityLimit, setActivityLimit] = useState(10);
   const t = (key: TranslationKey, values?: Record<string, string>) =>
     translate(locale, key, values);
 
@@ -59,6 +64,38 @@ export function App({
       .finally(() => setProfilesLoaded(true));
   }, [api]);
 
+  useEffect(() => {
+    let active = true;
+    void api
+      .queryActivity(activityLimit)
+      .then((next) => {
+        if (active) {
+          setActivity(next);
+          setActivityError(false);
+        }
+      })
+      .catch(() => {
+        if (active) setActivityError(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, [api, activityLimit]);
+
+  useEffect(() => {
+    if (!status.running) return;
+    const timer = window.setInterval(() => {
+      void api
+        .queryActivity(activityLimit)
+        .then((next) => {
+          setActivity(next);
+          setActivityError(false);
+        })
+        .catch(() => setActivityError(true));
+    }, 1_000);
+    return () => window.clearInterval(timer);
+  }, [api, activityLimit, status.running]);
+
   const changeLocale = (nextLocale: Locale) => {
     setLocale(nextLocale);
     setLocalePreference(nextLocale);
@@ -68,7 +105,17 @@ export function App({
   const toggleGateway = async () => {
     setGatewayPending(true);
     try {
-      setStatus(status.running ? await api.stopGateway() : await api.startGateway());
+      const nextStatus = status.running ? await api.stopGateway() : await api.startGateway();
+      setStatus(nextStatus);
+      if (!nextStatus.running) {
+        try {
+          const nextActivity = await api.queryActivity(activityLimit);
+          setActivity(nextActivity);
+          setActivityError(false);
+        } catch {
+          setActivityError(true);
+        }
+      }
       setError(null);
     } catch (cause) {
       reportError(cause);
@@ -215,6 +262,18 @@ export function App({
             </div>
           )}
         </section>
+
+        {profiles.length > 0 && (
+          <PrivacyActivity
+            data={activity}
+            error={activityError ? t("activityQueryFailed") : null}
+            limit={activityLimit}
+            locale={locale}
+            onShowMore={() => setActivityLimit(100)}
+            profiles={profiles}
+            t={t}
+          />
+        )}
 
         {profiles.length === 0 && <p className="helper">{t("needConnection")}</p>}
         {error && (

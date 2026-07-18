@@ -206,7 +206,8 @@ code {
 
 .intro-card,
 .connections-section,
-.one-time-secret {
+.one-time-secret,
+.privacy-activity {
   margin-bottom: 22px;
   padding: 26px;
   border: 1px solid var(--border);
@@ -217,7 +218,8 @@ code {
 
 .intro-card h2,
 .connections-section h2,
-.one-time-secret h2 {
+.one-time-secret h2,
+.privacy-activity h2 {
   margin-bottom: 8px;
   font-size: 22px;
 }
@@ -615,6 +617,195 @@ dd {
   border: 0;
 }
 
+.activity-heading {
+  margin-bottom: 12px;
+}
+
+.activity-retention {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.activity-summary {
+  margin-bottom: 14px;
+  font-size: 13px;
+}
+
+.activity-error,
+.activity-warning {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid #7b622e;
+  border-radius: 9px;
+  color: var(--warning);
+  background: rgb(73 55 20 / 42%);
+}
+
+.activity-empty {
+  padding: 24px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 12px;
+  text-align: center;
+  background: rgb(8 17 30 / 35%);
+}
+
+.activity-empty p {
+  margin: 7px 0 0;
+}
+
+.activity-list {
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  overflow: hidden;
+  background: var(--surface-soft);
+}
+
+.activity-list details {
+  border: 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.activity-list details:last-child {
+  border-bottom: 0;
+}
+
+.activity-list summary {
+  display: grid;
+  grid-template-columns: 112px minmax(120px, 1fr) auto;
+  align-items: center;
+  gap: 9px 14px;
+  padding: 14px 16px;
+  list-style-position: inside;
+}
+
+.activity-list details[open] summary {
+  margin-bottom: 0;
+  background: rgb(23 37 58 / 72%);
+}
+
+.activity-time {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.activity-model {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-model small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+}
+
+.activity-action,
+.activity-category {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 3px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.activity-action--block {
+  color: #ffd0d4;
+  background: var(--danger-soft);
+}
+
+.activity-action--pseudonymize,
+.activity-action--mask {
+  color: #b8ddff;
+  background: var(--primary-soft);
+}
+
+.activity-action--monitor {
+  color: #ffe2a7;
+  background: #443719;
+}
+
+.activity-categories {
+  display: flex;
+  grid-column: 2 / -1;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.activity-category {
+  border: 1px solid var(--border);
+  color: #c4d1e2;
+  background: #152339;
+}
+
+.activity-details {
+  padding: 2px 16px 16px;
+  background: rgb(8 17 30 / 40%);
+}
+
+.activity-details dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin: 16px 0;
+}
+
+.activity-details dl > div {
+  min-width: 0;
+}
+
+.activity-preview {
+  padding: 13px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgb(13 24 41 / 78%);
+}
+
+.activity-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.activity-preview ul {
+  display: grid;
+  gap: 7px;
+  margin: 10px 0;
+  padding: 0;
+  list-style: none;
+}
+
+.activity-preview li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.activity-preview li span,
+.activity-preview p {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.activity-preview p {
+  margin: 8px 0 0;
+}
+
+.activity-more {
+  width: 100%;
+  margin-top: 12px;
+}
+
 @media (max-width: 760px) {
   .app-header,
   .header-actions,
@@ -644,7 +835,8 @@ dd {
 
   .intro-card,
   .connections-section,
-  .one-time-secret {
+  .one-time-secret,
+  .privacy-activity {
     padding: 18px;
   }
 
@@ -655,6 +847,19 @@ dd {
   }
 
   .segmented--protocol {
+    grid-template-columns: 1fr;
+  }
+
+  .activity-list summary {
+    grid-template-columns: 1fr auto;
+  }
+
+  .activity-time,
+  .activity-categories {
+    grid-column: 1 / -1;
+  }
+
+  .activity-details dl {
     grid-template-columns: 1fr;
   }
 

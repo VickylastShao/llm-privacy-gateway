@@ -1,9 +1,13 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import type { DesktopApi } from "./desktop-api";
-import type { GatewayStatus, ProfileSummary } from "./model";
+import type {
+  GatewayStatus,
+  PrivacyActivityResponse,
+  ProfileSummary,
+} from "./model";
 
 const profile: ProfileSummary = {
   id: "profile-1",
@@ -11,6 +15,37 @@ const profile: ProfileSummary = {
   protocol: "openai",
   upstream_url: "https://api.deepseek.com",
   policy: "strict",
+};
+
+const emptyActivity: PrivacyActivityResponse = {
+  activities: [],
+  total_activity_count: 0,
+  session_preview_count: 0,
+  persist_dropped_count: 0,
+  retention_hours: 168,
+};
+
+const interceptedActivity: PrivacyActivityResponse = {
+  activities: [
+    {
+      id: "activity-1",
+      occurred_at_ms: Date.UTC(2026, 6, 18, 2, 30),
+      profile_id: profile.id,
+      endpoint: "/chat/completions",
+      model: "deepseek-chat",
+      status: 403,
+      latency_ms: 12,
+      category_counts: { api_key: 1, custom: 2 },
+      actions: ["block", "pseudonymize"],
+      request_id: "request-1",
+      previews: [{ kind: "api_key", display: "sk-•••••••xyz" }],
+      preview_available: true,
+    },
+  ],
+  total_activity_count: 1,
+  session_preview_count: 1,
+  persist_dropped_count: 0,
+  retention_hours: 168,
 };
 
 function emptyApi(
@@ -25,6 +60,7 @@ function emptyApi(
     createProfile: vi.fn(),
     rotateLocalKey: vi.fn(),
     deleteProfile: vi.fn(),
+    queryActivity: vi.fn().mockResolvedValue(emptyActivity),
   };
 }
 
@@ -238,5 +274,59 @@ describe("desktop single-page shell", () => {
     await user.click(await screen.findByRole("button", { name: "Start protection" }));
     expect(await screen.findByText("<img src=x onerror=alert(1)>")).toBeTruthy();
     expect(container.querySelector("img")).toBeNull();
+  });
+
+  it("shows intercepted privacy categories and only safe masked previews", async () => {
+    const user = userEvent.setup();
+    const api = emptyApi([profile]);
+    vi.mocked(api.queryActivity).mockResolvedValue(interceptedActivity);
+    render(<App api={api} initialLanguage="en-US" />);
+
+    expect(await screen.findByText("Privacy activity")).toBeTruthy();
+    expect(screen.getByText("API key ×1")).toBeTruthy();
+    expect(screen.getByText("Custom term ×2")).toBeTruthy();
+    expect(screen.getAllByText("Blocked")).toHaveLength(2);
+    expect(screen.queryByText("sk-secret-original-xyz")).toBeNull();
+
+    await user.click(screen.getByText("deepseek-chat"));
+    expect(screen.getByText("sk-•••••••xyz")).toBeTruthy();
+    expect(screen.getByText("Available only in this app session")).toBeTruthy();
+    expect(screen.getByText("Pseudonymized")).toBeTruthy();
+  });
+
+  it("polls while protection runs without closing an expanded activity", async () => {
+    vi.useFakeTimers();
+    try {
+      const api = emptyApi([profile], { running: true });
+      vi.mocked(api.queryActivity).mockResolvedValue(interceptedActivity);
+      render(<App api={api} initialLanguage="en-US" />);
+
+      await act(async () => Promise.resolve());
+      const details = screen.getByText("deepseek-chat").closest("details");
+      if (!details) throw new Error("activity details missing");
+      fireEvent.click(details.querySelector("summary") as HTMLElement);
+      expect(details.open).toBe(true);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000);
+      });
+      expect(api.queryActivity).toHaveBeenCalledTimes(2);
+      expect(details.open).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("loads the full bounded history after one show-more action", async () => {
+    const user = userEvent.setup();
+    const api = emptyApi([profile]);
+    vi.mocked(api.queryActivity).mockResolvedValue({
+      ...interceptedActivity,
+      total_activity_count: 20,
+    });
+    render(<App api={api} initialLanguage="en-US" />);
+
+    await user.click(await screen.findByRole("button", { name: "Show more" }));
+    await waitFor(() => expect(api.queryActivity).toHaveBeenCalledWith(100));
   });
 });
