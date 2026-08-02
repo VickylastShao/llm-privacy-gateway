@@ -147,11 +147,9 @@ fn transform_content<P: Pseudonymizer>(
                 match block.get("type").and_then(Value::as_str) {
                     Some("text") => transform_field(block, "text", engine, policy, map, report)?,
                     Some("tool_result") => {
-                        transform_field(block, "content", engine, policy, map, report)?
+                        transform_tool_result(block, engine, policy, map, report)?
                     }
-                    Some("tool_use") => {
-                        transform_field(block, "input", engine, policy, map, report)?
-                    }
+                    Some("tool_use") => transform_tool_input(block, engine, policy, map, report)?,
                     _ => {}
                 }
             }
@@ -225,8 +223,8 @@ fn transform_raw_block<P: Pseudonymizer>(
         serde_json::from_str(block.get()).map_err(|_| AnthropicProtocolError::Json)?;
     match value.get("type").and_then(Value::as_str) {
         Some("text") => transform_field(&mut value, "text", engine, policy, map, report)?,
-        Some("tool_result") => transform_field(&mut value, "content", engine, policy, map, report)?,
-        Some("tool_use") => transform_field(&mut value, "input", engine, policy, map, report)?,
+        Some("tool_result") => transform_tool_result(&mut value, engine, policy, map, report)?,
+        Some("tool_use") => transform_tool_input(&mut value, engine, policy, map, report)?,
         // Thinking, redacted_thinking, image and unknown blocks must remain raw. Anthropic
         // signatures are tied to the original serialized block rather than its JSON meaning.
         _ => return Ok(block),
@@ -240,20 +238,145 @@ fn restore_raw_response_block<B: MappingBackend>(
 ) -> Result<Box<RawValue>, AnthropicProtocolError> {
     let mut value: Value =
         serde_json::from_str(block.get()).map_err(|_| AnthropicProtocolError::Json)?;
-    if value.get("type").and_then(Value::as_str) != Some("text") {
-        return Ok(block);
+    match value.get("type").and_then(Value::as_str) {
+        Some("text") => restore_field(&mut value, "text", map)?,
+        Some("tool_use") => {
+            if let Some(input) = value.get_mut("input") {
+                restore_json_strings(input, map)?;
+            }
+        }
+        _ => return Ok(block),
     }
-    let Some(field) = value.get_mut("text") else {
-        return raw_value(serde_json::to_string(&value).map_err(|_| AnthropicProtocolError::Json)?);
-    };
-    let Some(text) = field.as_str() else {
-        return raw_value(serde_json::to_string(&value).map_err(|_| AnthropicProtocolError::Json)?);
-    };
-    let restored = map
-        .restore_text(text)
-        .map_err(|_| AnthropicProtocolError::Privacy)?;
-    *field = Value::String(restored);
     raw_value(serde_json::to_string(&value).map_err(|_| AnthropicProtocolError::Json)?)
+}
+
+fn transform_tool_result<P: Pseudonymizer>(
+    block: &mut Value,
+    engine: &PrivacyEngine,
+    policy: &Policy,
+    map: &mut P,
+    report: &mut RequestPrivacyReport,
+) -> Result<(), AnthropicProtocolError> {
+    let Some(content) = block.get_mut("content") else {
+        return Ok(());
+    };
+    match content {
+        Value::String(_) => transform_value_string(content, engine, policy, map, report),
+        Value::Array(parts) => {
+            for part in parts {
+                if part.get("type").and_then(Value::as_str) == Some("text") {
+                    transform_field(part, "text", engine, policy, map, report)?;
+                }
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn transform_tool_input<P: Pseudonymizer>(
+    block: &mut Value,
+    engine: &PrivacyEngine,
+    policy: &Policy,
+    map: &mut P,
+    report: &mut RequestPrivacyReport,
+) -> Result<(), AnthropicProtocolError> {
+    if let Some(input) = block.get_mut("input") {
+        transform_json_strings(input, engine, policy, map, report)?;
+    }
+    Ok(())
+}
+
+fn transform_json_strings<P: Pseudonymizer>(
+    value: &mut Value,
+    engine: &PrivacyEngine,
+    policy: &Policy,
+    map: &mut P,
+    report: &mut RequestPrivacyReport,
+) -> Result<(), AnthropicProtocolError> {
+    match value {
+        Value::String(_) => transform_value_string(value, engine, policy, map, report),
+        Value::Array(values) => {
+            for value in values {
+                transform_json_strings(value, engine, policy, map, report)?;
+            }
+            Ok(())
+        }
+        Value::Object(values) => {
+            for value in values.values_mut() {
+                transform_json_strings(value, engine, policy, map, report)?;
+            }
+            Ok(())
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => Ok(()),
+    }
+}
+
+fn transform_value_string<P: Pseudonymizer>(
+    value: &mut Value,
+    engine: &PrivacyEngine,
+    policy: &Policy,
+    map: &mut P,
+    report: &mut RequestPrivacyReport,
+) -> Result<(), AnthropicProtocolError> {
+    let Some(text) = value.as_str() else {
+        return Ok(());
+    };
+    *value = Value::String(
+        engine
+            .transform_reported(text, policy, map, report)
+            .map_err(|_| AnthropicProtocolError::Privacy)?
+            .outbound_text()
+            .to_owned(),
+    );
+    Ok(())
+}
+
+fn restore_field<B: MappingBackend>(
+    value: &mut Value,
+    key: &str,
+    map: &PseudonymMap<B>,
+) -> Result<(), AnthropicProtocolError> {
+    let Some(field) = value.get_mut(key) else {
+        return Ok(());
+    };
+    restore_json_string(field, map)
+}
+
+fn restore_json_strings<B: MappingBackend>(
+    value: &mut Value,
+    map: &PseudonymMap<B>,
+) -> Result<(), AnthropicProtocolError> {
+    match value {
+        Value::String(_) => restore_json_string(value, map),
+        Value::Array(values) => {
+            for value in values {
+                restore_json_strings(value, map)?;
+            }
+            Ok(())
+        }
+        Value::Object(values) => {
+            for value in values.values_mut() {
+                restore_json_strings(value, map)?;
+            }
+            Ok(())
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => Ok(()),
+    }
+}
+
+fn restore_json_string<B: MappingBackend>(
+    value: &mut Value,
+    map: &PseudonymMap<B>,
+) -> Result<(), AnthropicProtocolError> {
+    let Some(text) = value.as_str() else {
+        return Ok(());
+    };
+    *value = Value::String(
+        map.restore_text(text)
+            .map_err(|_| AnthropicProtocolError::Privacy)?,
+    );
+    Ok(())
 }
 
 fn raw_value(value: String) -> Result<Box<RawValue>, AnthropicProtocolError> {
@@ -271,14 +394,5 @@ fn transform_field<P: Pseudonymizer>(
     let Some(value) = block.get_mut(key) else {
         return Ok(());
     };
-    if let Some(text) = value.as_str() {
-        *value = Value::String(
-            engine
-                .transform_reported(text, policy, map, report)
-                .map_err(|_| AnthropicProtocolError::Privacy)?
-                .outbound_text()
-                .to_owned(),
-        );
-    }
-    Ok(())
+    transform_value_string(value, engine, policy, map, report)
 }

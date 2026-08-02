@@ -1,4 +1,5 @@
 use protocol_openai::{OpenAiSseTransformer, SseDecoder, StreamRestorer, restore_openai_sse};
+use serde_json::json;
 use session_map::{MemoryBackend, PseudonymMap};
 use uuid::Uuid;
 
@@ -116,4 +117,163 @@ fn restores_provider_reasoning_content_without_emitting_partial_placeholders() {
 
     assert!(output.contains("alice@example.test"));
     assert!(!output.contains("__LPG_"));
+}
+
+#[test]
+fn chat_stream_restores_split_tool_arguments() {
+    let mut map = PseudonymMap::new(Uuid::nil(), [18; 32], MemoryBackend::default());
+    let token = map
+        .pseudonymize("email", "alice@example.test")
+        .unwrap_or_else(|error| panic!("map: {error}"));
+    let split = token.len() / 2;
+    let event = |arguments: &str| {
+        format!(
+            "data: {}\n\n",
+            json!({
+                "choices": [{
+                    "index": 0,
+                    "delta": {"tool_calls": [{
+                        "index": 0,
+                        "function": {"arguments": arguments}
+                    }]}
+                }]
+            })
+        )
+    };
+    let source = format!(
+        "{}{}data: [DONE]\n\n",
+        event(&format!(r#"{{"email":"{}"#, &token[..split])),
+        event(&format!(r#"{}"}}"#, &token[split..]))
+    );
+
+    let output =
+        restore_openai_sse(&source, &map).unwrap_or_else(|error| panic!("restore: {error}"));
+
+    let arguments = output
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter(|data| *data != "[DONE]")
+        .map(|data| {
+            serde_json::from_str::<serde_json::Value>(data)
+                .unwrap_or_else(|error| panic!("event JSON: {error}"))["choices"][0]["delta"]
+                ["tool_calls"][0]["function"]["arguments"]
+                .as_str()
+                .unwrap_or_else(|| panic!("arguments must be a string"))
+                .to_owned()
+        })
+        .collect::<String>();
+    assert_eq!(arguments, r#"{"email":"alice@example.test"}"#);
+    assert!(!output.contains(&token));
+}
+
+#[test]
+fn chat_stream_keeps_interleaved_choices_isolated() {
+    let mut map = PseudonymMap::new(Uuid::nil(), [19; 32], MemoryBackend::default());
+    let first = map
+        .pseudonymize("email", "alice@example.test")
+        .unwrap_or_else(|error| panic!("first map: {error}"));
+    let second = map
+        .pseudonymize("email", "bob@example.test")
+        .unwrap_or_else(|error| panic!("second map: {error}"));
+    let split = first.len() / 2;
+    let event = |index: usize, content: &str| {
+        format!(
+            "data: {}\n\n",
+            json!({"choices":[{"index":index,"delta":{"content":content}}]})
+        )
+    };
+    let source = format!(
+        "{}{}{}data: [DONE]\n\n",
+        event(0, &first[..split]),
+        event(1, &second),
+        event(0, &first[split..]),
+    );
+
+    let output =
+        restore_openai_sse(&source, &map).unwrap_or_else(|error| panic!("restore: {error}"));
+
+    assert!(output.contains("alice@example.test"));
+    assert!(output.contains("bob@example.test"));
+    assert!(!output.contains("__LPG_"));
+}
+
+#[test]
+fn responses_stream_keeps_interleaved_output_items_isolated() {
+    let mut map = PseudonymMap::new(Uuid::nil(), [20; 32], MemoryBackend::default());
+    let first = map
+        .pseudonymize("email", "alice@example.test")
+        .unwrap_or_else(|error| panic!("first map: {error}"));
+    let second = map
+        .pseudonymize("email", "bob@example.test")
+        .unwrap_or_else(|error| panic!("second map: {error}"));
+    let split = first.len() / 2;
+    let event = |output_index: usize, delta: &str| {
+        format!(
+            "event: response.output_text.delta\ndata: {}\n\n",
+            json!({
+                "type":"response.output_text.delta",
+                "output_index":output_index,
+                "content_index":0,
+                "delta":delta
+            })
+        )
+    };
+    let source = format!(
+        "{}{}{}",
+        event(0, &first[..split]),
+        event(1, &second),
+        event(0, &first[split..]),
+    );
+
+    let output =
+        restore_openai_sse(&source, &map).unwrap_or_else(|error| panic!("restore: {error}"));
+
+    assert!(output.contains("alice@example.test"));
+    assert!(output.contains("bob@example.test"));
+    assert!(!output.contains("__LPG_"));
+}
+
+#[test]
+fn responses_stream_restores_completed_items_parts_and_responses() {
+    let mut map = PseudonymMap::new(Uuid::nil(), [21; 32], MemoryBackend::default());
+    let token = map
+        .pseudonymize("email", "alice@example.test")
+        .unwrap_or_else(|error| panic!("map: {error}"));
+    let event = |name: &str, value: serde_json::Value| format!("event: {name}\ndata: {value}\n\n");
+    let source = format!(
+        "{}{}{}",
+        event(
+            "response.output_item.done",
+            json!({
+                "type": "response.output_item.done",
+                "item": {"type": "function_call", "arguments": format!(r#"{{\"email\":\"{token}\"}}"#)}
+            }),
+        ),
+        event(
+            "response.content_part.done",
+            json!({
+                "type": "response.content_part.done",
+                "part": {"type": "output_text", "text": format!("Contact {token}")}
+            }),
+        ),
+        event(
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "output_text": format!("Contact {token}"),
+                    "output": [{
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": format!("Contact {token}")}]
+                    }]
+                }
+            }),
+        ),
+    );
+
+    let output =
+        restore_openai_sse(&source, &map).unwrap_or_else(|error| panic!("restore: {error}"));
+
+    assert_eq!(output.matches("alice@example.test").count(), 4);
+    assert!(!output.contains(&token));
 }

@@ -103,6 +103,9 @@ fn transform_raw_event<B: MappingBackend>(
     let event = lines
         .iter()
         .find_map(|line| line.strip_prefix("event:").map(str::trim_start));
+    if event == Some("content_block_start") {
+        return restore_content_block_start(raw_event, delimiter, map);
+    }
     if event == Some("content_block_stop") {
         return flush_input_json(raw_event, delimiter, input_json, map);
     }
@@ -175,6 +178,102 @@ fn transform_raw_event<B: MappingBackend>(
     let mut output = Vec::new();
     let mut replaced_data = false;
     for line in lines {
+        if line.strip_prefix("data:").is_some() {
+            if replaced_data {
+                continue;
+            }
+            output.push(format!("data: {payload}"));
+            replaced_data = true;
+        } else {
+            output.push(line.to_owned());
+        }
+    }
+    Ok(format!("{}{delimiter}", output.join(line_ending)))
+}
+
+fn restore_content_block_start<B: MappingBackend>(
+    raw_event: &str,
+    delimiter: &str,
+    map: &PseudonymMap<B>,
+) -> Result<String, AnthropicSseError> {
+    let data = raw_event
+        .lines()
+        .filter_map(|line| line.strip_prefix("data:").map(str::trim_start))
+        .collect::<Vec<_>>();
+    if data.is_empty() {
+        return Err(AnthropicSseError::Invalid);
+    }
+    let mut value: Value =
+        serde_json::from_str(&data.join("\n")).map_err(|_| AnthropicSseError::Invalid)?;
+    let Some(block) = value.get_mut("content_block") else {
+        return Ok(format!("{raw_event}{delimiter}"));
+    };
+    match block.get("type").and_then(Value::as_str) {
+        Some("text") => {
+            if let Some(text) = block.get_mut("text") {
+                restore_json_string(text, map)?;
+            }
+        }
+        Some("tool_use") => {
+            if let Some(input) = block.get_mut("input") {
+                restore_json_strings(input, map)?;
+            }
+        }
+        _ => return Ok(format!("{raw_event}{delimiter}")),
+    }
+    replace_event_data(raw_event, delimiter, &value)
+}
+
+fn restore_json_strings<B: MappingBackend>(
+    value: &mut Value,
+    map: &PseudonymMap<B>,
+) -> Result<(), AnthropicSseError> {
+    match value {
+        Value::String(_) => restore_json_string(value, map),
+        Value::Array(values) => {
+            for value in values {
+                restore_json_strings(value, map)?;
+            }
+            Ok(())
+        }
+        Value::Object(values) => {
+            for value in values.values_mut() {
+                restore_json_strings(value, map)?;
+            }
+            Ok(())
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => Ok(()),
+    }
+}
+
+fn restore_json_string<B: MappingBackend>(
+    value: &mut Value,
+    map: &PseudonymMap<B>,
+) -> Result<(), AnthropicSseError> {
+    let Some(text) = value.as_str() else {
+        return Ok(());
+    };
+    *value = Value::String(
+        map.restore_text(text)
+            .map_err(|_| AnthropicSseError::Mapping)?,
+    );
+    Ok(())
+}
+
+fn replace_event_data(
+    raw_event: &str,
+    delimiter: &str,
+    value: &Value,
+) -> Result<String, AnthropicSseError> {
+    let payload = serde_json::to_string(value).map_err(|_| AnthropicSseError::Invalid)?;
+    let line_ending = if raw_event.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let mut output = Vec::new();
+    let mut replaced_data = false;
+    for line in raw_event.lines() {
         if line.strip_prefix("data:").is_some() {
             if replaced_data {
                 continue;

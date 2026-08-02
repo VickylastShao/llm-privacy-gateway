@@ -1,16 +1,28 @@
 import { type FormEvent, useRef, useState } from "react";
 import type { Translator } from "../i18n";
 import {
-  defaultUpstreamUrl,
+  providerDefaultUrl,
+  providerPreset,
+  providerPresets,
+  providerProtocols,
+  sameUpstreamOrigin,
+  type DiscoveredProfile,
+  type EditableProfile,
   type Policy,
   type ProfileDraft,
+  type ProviderId,
   type Protocol,
 } from "../model";
 
 type Props = {
   t: Translator;
   onSubmit: (draft: ProfileDraft) => Promise<void>;
+  discoveries: DiscoveredProfile[];
+  discoveryScanned: boolean;
+  discoveryPending: boolean;
+  onScanEnvironment: () => Promise<void>;
   onCancel?: () => void;
+  initial?: EditableProfile;
 };
 
 const protocols: Protocol[] = ["openai", "anthropic"];
@@ -21,19 +33,57 @@ const policyCopy = {
   monitor: ["policyMonitor", "policyMonitorDescription"],
 } as const;
 
-export function ConnectionForm({ t, onSubmit, onCancel }: Props) {
+export function ConnectionForm({
+  t,
+  onSubmit,
+  onCancel,
+  discoveries,
+  discoveryScanned,
+  discoveryPending,
+  onScanEnvironment,
+  initial,
+}: Props) {
   const upstreamKey = useRef<HTMLInputElement>(null);
-  const [name, setName] = useState("");
-  const [protocol, setProtocol] = useState<Protocol>("openai");
-  const [upstreamUrl, setUpstreamUrl] = useState(defaultUpstreamUrl("openai"));
-  const [urlIsDirty, setUrlIsDirty] = useState(false);
-  const [policy, setPolicy] = useState<Policy>("strict");
-  const [customTerms, setCustomTerms] = useState("");
+  const [name, setName] = useState(initial?.name ?? "");
+  const [provider, setProvider] = useState<ProviderId>(initial?.provider ?? "openai");
+  const [protocol, setProtocol] = useState<Protocol>(initial?.protocol ?? "openai");
+  const [upstreamUrl, setUpstreamUrl] = useState(
+    initial?.upstream_url ?? providerDefaultUrl("openai", "openai"),
+  );
+  const [urlIsDirty, setUrlIsDirty] = useState(Boolean(initial));
+  const [discoveryId, setDiscoveryId] = useState<string | undefined>();
+  const [policy, setPolicy] = useState<Policy>(initial?.policy ?? "strict");
+  const [customTerms, setCustomTerms] = useState(initial?.custom_terms.join("\n") ?? "");
   const [pending, setPending] = useState(false);
+  const upstreamOriginChanged = Boolean(
+    initial && !sameUpstreamOrigin(initial.upstream_url, upstreamUrl),
+  );
 
   const chooseProtocol = (next: Protocol) => {
     setProtocol(next);
-    if (!urlIsDirty) setUpstreamUrl(defaultUpstreamUrl(next));
+    if (!urlIsDirty) setUpstreamUrl(providerDefaultUrl(provider, next));
+  };
+
+  const chooseProvider = (next: ProviderId) => {
+    const preset = providerPreset(next);
+    const supported = providerProtocols(next);
+    const nextProtocol = supported.includes(protocol) ? protocol : (supported[0] ?? protocol);
+    setProvider(next);
+    setProtocol(nextProtocol);
+    setUpstreamUrl(providerDefaultUrl(next, nextProtocol));
+    setUrlIsDirty(false);
+    setDiscoveryId(undefined);
+    if (!name.trim() && next !== "custom") setName(preset.name);
+  };
+
+  const chooseDiscovery = (candidate: DiscoveredProfile) => {
+    setDiscoveryId(candidate.id);
+    setProvider(candidate.provider);
+    setProtocol(candidate.protocol);
+    setName(candidate.name);
+    setUpstreamUrl(candidate.upstream_url);
+    setUrlIsDirty(false);
+    if (upstreamKey.current) upstreamKey.current.value = "";
   };
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
@@ -46,6 +96,7 @@ export function ConnectionForm({ t, onSubmit, onCancel }: Props) {
         protocol,
         upstreamUrl,
         upstreamKey: key,
+        discoveryId,
         policy,
         customTerms: customTerms
           .split(/\r?\n/)
@@ -54,6 +105,7 @@ export function ConnectionForm({ t, onSubmit, onCancel }: Props) {
       });
       setName("");
       setCustomTerms("");
+      setDiscoveryId(undefined);
     } finally {
       if (upstreamKey.current) upstreamKey.current.value = "";
       setPending(false);
@@ -62,10 +114,66 @@ export function ConnectionForm({ t, onSubmit, onCancel }: Props) {
 
   return (
     <form aria-label={t("connectionForm")} onSubmit={(event) => void submit(event)}>
+      {!initial && <section className="environment-import" aria-label={t("environmentImportTitle")}>
+        <div>
+          <strong>{t("environmentImportTitle")}</strong>
+          <small>{t("environmentImportDescription")}</small>
+        </div>
+        <button
+          disabled={discoveryPending}
+          onClick={() => void onScanEnvironment()}
+          type="button"
+        >
+          {discoveryPending ? t("environmentScanning") : t("environmentScan")}
+        </button>
+        {discoveries.length > 0 && (
+          <div className="discovery-list">
+            {discoveries.map((candidate) => (
+              <button
+                aria-pressed={discoveryId === candidate.id}
+                className="discovery-candidate"
+                key={candidate.id}
+                onClick={() => chooseDiscovery(candidate)}
+                type="button"
+              >
+                <span>
+                  <strong>{candidate.name}</strong>
+                  <small>
+                    {candidate.source} · {candidate.key_variable}
+                    {candidate.url_variable ? ` + ${candidate.url_variable}` : ""}
+                  </small>
+                </span>
+                <code>{candidate.key_preview}</code>
+              </button>
+            ))}
+          </div>
+        )}
+        {discoveryScanned && !discoveryPending && discoveries.length === 0 && (
+          <small>{t("environmentEmpty")}</small>
+        )}
+      </section>}
+
+      <div className="field">
+        <label htmlFor="provider">{t("provider")}</label>
+        <div className="select-shell">
+          <select
+            id="provider"
+            onChange={(event) => chooseProvider(event.target.value as ProviderId)}
+            value={provider}
+          >
+            {providerPresets.map((preset) => (
+              <option key={preset.id} value={preset.id}>
+                {preset.id === "custom" ? t("providerCustom") : preset.name}
+              </option>
+            ))}
+          </select>
+        </div>
+        <small>{t("providerHint")}</small>
+      </div>
+
       <label>
         <span>{t("connectionName")}</span>
         <input
-          autoFocus
           name="name"
           onChange={(event) => setName(event.target.value)}
           placeholder={t("connectionNamePlaceholder")}
@@ -74,7 +182,7 @@ export function ConnectionForm({ t, onSubmit, onCancel }: Props) {
         />
       </label>
 
-      <fieldset>
+      {providerProtocols(provider).length > 1 && <fieldset>
         <legend>{t("protocol")}</legend>
         <div className="segmented segmented--protocol">
           {protocols.map((value) => (
@@ -90,7 +198,7 @@ export function ConnectionForm({ t, onSubmit, onCancel }: Props) {
             </label>
           ))}
         </div>
-      </fieldset>
+      </fieldset>}
 
       <div className="field">
         <label htmlFor="upstream-url">{t("upstreamBaseUrl")}</label>
@@ -101,6 +209,7 @@ export function ConnectionForm({ t, onSubmit, onCancel }: Props) {
             onChange={(event) => {
               setUpstreamUrl(event.target.value);
               setUrlIsDirty(true);
+              setDiscoveryId(undefined);
             }}
             required
             type="url"
@@ -109,8 +218,9 @@ export function ConnectionForm({ t, onSubmit, onCancel }: Props) {
           <button
             aria-label={t("resetDefaultUrl")}
             onClick={() => {
-              setUpstreamUrl(defaultUpstreamUrl(protocol));
+              setUpstreamUrl(providerDefaultUrl(provider, protocol));
               setUrlIsDirty(false);
+              setDiscoveryId(undefined);
             }}
             type="button"
           >
@@ -127,10 +237,16 @@ export function ConnectionForm({ t, onSubmit, onCancel }: Props) {
           id="upstream-key"
           name="upstreamKey"
           ref={upstreamKey}
-          required
+          required={!discoveryId && (!initial || upstreamOriginChanged)}
           type="password"
         />
-        <small id="upstream-key-hint">{t("apiKeyHint")}</small>
+        <small id="upstream-key-hint">
+          {initial
+            ? t(upstreamOriginChanged ? "apiKeyOriginChangedHint" : "apiKeyEditHint")
+            : discoveryId
+              ? t("apiKeyImportedHint")
+              : t("apiKeyHint")}
+        </small>
       </div>
 
       <details>
@@ -176,7 +292,9 @@ export function ConnectionForm({ t, onSubmit, onCancel }: Props) {
           </button>
         )}
         <button disabled={pending} type="submit">
-          {pending ? t("creatingConnection") : t("createConnection")}
+          {pending
+            ? t(initial ? "updatingConnection" : "creatingConnection")
+            : t(initial ? "updateConnection" : "createConnection")}
         </button>
       </div>
     </form>

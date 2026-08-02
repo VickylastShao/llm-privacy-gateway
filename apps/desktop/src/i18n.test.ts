@@ -4,6 +4,7 @@ import {
   initialLocale,
   localizeError,
   setLocalePreference,
+  translate,
 } from "./i18n";
 
 describe("desktop locale selection", () => {
@@ -21,6 +22,15 @@ describe("desktop locale selection", () => {
     setLocalePreference("zh-CN");
     expect(localStorage.getItem("lpg.locale")).toBe("zh-CN");
   });
+
+  it("states that monitor mode still blocks credentials", () => {
+    expect(translate("en", "policyMonitorDescription")).toContain(
+      "credentials are still blocked",
+    );
+    expect(translate("zh-CN", "policyMonitorDescription")).toContain(
+      "凭证仍会被阻断",
+    );
+  });
 });
 
 describe("desktop error localization", () => {
@@ -28,6 +38,11 @@ describe("desktop error localization", () => {
     expect(
       localizeError("zh-CN", "create a profile before starting the gateway"),
     ).toEqual({ summary: "请先添加连接，再启动保护。" });
+    expect(
+      localizeError("en", "discovered credential expired; scan again"),
+    ).toEqual({
+      summary: "The imported credential expired. Find configurations again.",
+    });
   });
 
   it("keeps an unknown failure as secondary plain-text detail", () => {

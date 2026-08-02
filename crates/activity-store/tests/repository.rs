@@ -34,6 +34,46 @@ fn initialization_removes_the_unused_policy_rules_table() {
 }
 
 #[test]
+fn failed_schema_migration_preserves_the_legacy_table_and_rows() {
+    let file = NamedTempFile::new().unwrap_or_else(|error| panic!("temp file: {error}"));
+    {
+        let connection = rusqlite::Connection::open(file.path())
+            .unwrap_or_else(|error| panic!("legacy sqlite: {error}"));
+        connection
+            .execute_batch(
+                "CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY); \
+                 INSERT INTO schema_migrations VALUES(1); \
+                 CREATE TABLE activities(legacy_value TEXT NOT NULL); \
+                 INSERT INTO activities VALUES('preserve-me'); \
+                 CREATE TRIGGER fail_version_two BEFORE INSERT ON schema_migrations \
+                 WHEN NEW.version=2 BEGIN SELECT RAISE(ABORT,'migration failure'); END;",
+            )
+            .unwrap_or_else(|error| panic!("legacy fixture: {error}"));
+    }
+
+    assert!(matches!(
+        Repository::open(file.path()),
+        Err(StoreError::Database)
+    ));
+
+    let connection = rusqlite::Connection::open(file.path())
+        .unwrap_or_else(|error| panic!("reopen legacy sqlite: {error}"));
+    let columns: Vec<String> = connection
+        .prepare("SELECT name FROM pragma_table_info('activities') ORDER BY cid")
+        .and_then(|mut statement| {
+            statement
+                .query_map([], |row| row.get(0))?
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .unwrap_or_else(|error| panic!("legacy columns: {error}"));
+    let value: String = connection
+        .query_row("SELECT legacy_value FROM activities", [], |row| row.get(0))
+        .unwrap_or_else(|error| panic!("legacy row: {error}"));
+    assert_eq!(columns, ["legacy_value"]);
+    assert_eq!(value, "preserve-me");
+}
+
+#[test]
 fn profiles_keep_only_refs_and_activity_metadata() {
     let repo = Repository::open_in_memory().unwrap_or_else(|e| panic!("open: {e}"));
     let id = Uuid::nil();

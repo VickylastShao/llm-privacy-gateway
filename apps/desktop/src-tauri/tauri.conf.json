@@ -1,7 +1,7 @@
 {
   "productName": "LLM Privacy Gateway",
   "version": "0.1.0",
-  "identifier": "com.local.llmprivacygateway",
+  "identifier": "com.vickylast.llmprivacygateway",
   "build": {
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build",
@@ -22,6 +22,19 @@
   },
   "bundle": {
     "active": true,
-    "targets": "nsis"
+    "publisher": "vickylast",
+    "targets": "nsis",
+    "category": "Utility",
+    "shortDescription": "Local privacy filtering for OpenAI- and Anthropic-compatible API clients.",
+    "longDescription": "Routes supported LLM API requests through a loopback-only gateway that detects, blocks, masks, or pseudonymizes sensitive information before forwarding.",
+    "licenseFile": "../../../LICENSE",
+    "icon": ["icons/icon.ico"],
+    "windows": {
+      "allowDowngrades": false,
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["English", "SimpChinese"]
+      }
+    }
   }
 }

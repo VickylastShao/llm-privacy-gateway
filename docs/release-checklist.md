@@ -1,11 +1,23 @@
 # Release checklist
 
-- Run Rust format, clippy, tests, and dependency audit.
+- Run Rust format, clippy, tests, and dependency audit for both the root workspace and the
+  standalone Windows desktop crate.
 - Run frontend install, tests, lint, and Windows Tauri build on Node 24 LTS.
+- Confirm `npm run check:versions` matches the `vX.Y.Z` tag and all release manifests.
+- Confirm `npm run check:release` accepts the permanent identifier, publisher, repository links, dated changelog, and private vulnerability-reporting URL.
+- Confirm the full npm audit reports no high or critical vulnerabilities.
+- Confirm the pinned Gitleaks full-history job passes with only the documented synthetic fixture allowlist.
 - Run synthetic canary leak checks through every supported route.
 - Confirm the CI P95 gates: 100KB privacy scan at or below 20ms and ordinary SSE first-event restoration at or below 30ms.
 - Verify loopback binding, upgrade persistence, key rotation, profile deletion, and credential-removal behavior on clean Windows.
+- Run `scripts/windows-clean-install-smoke.ps1` in a disposable VM or clean account with `-RequireSigned`, then complete the manual tray and upgrade checks in `docs/clean-windows-validation.md`.
+- Remove one test credential from Windows Credential Manager, restart, and confirm the unavailable connection is reported rather than silently hidden; confirm explicit recovery removes its database record and remaining credentials.
+- Open the add-connection form, confirm known environment configurations are discovered automatically, cancel the form, and confirm the backend discovery cache is cleared; repeat after a successful explicit import.
 - Install the generated NSIS package and launch the Start Menu shortcut. Confirm the main window opens without a console or `conhost.exe` window.
+- Confirm closing the window exits when protection is stopped; while protection is running it must hide to the tray, reopen from **Show**, and stop cleanly from **Exit**.
+- Verify Authenticode on both `lpg-desktop.exe` and the NSIS installer with `signtool verify /pa /all`.
+- Confirm the protected GitHub `release` environment and certificate secrets follow `docs/windows-code-signing.md`; never place PFX material or its password in repository files or task messages.
+- Confirm the release contains `SHA256SUMS.txt` with relative paths and `lpg-sbom.spdx.json`.
 - Repeat a debug launch and confirm console diagnostics remain available to developers.
 - Send synthetic blocked and transformed requests and confirm their privacy activity appears without raw canary values.
 - Restart the desktop app and confirm seven-day activity metadata remains while session-only previews are gone.
@@ -14,3 +26,7 @@
 - Confirm persistence failures produce a visible activity warning without changing gateway responses.
 - Inspect the SQLite database and confirm request bodies, response bodies, original matches, and preview values are absent.
 - Publish exact SDK versions and supported route limitations.
+- Run `scripts/real-provider-smoke.mjs` once for a production OpenAI-compatible provider and once for native Anthropic with non-production keys; record protocol, model, date, and pass/fail output without recording credentials.
+- Confirm `CHANGELOG.md` has the release date and final repository release links.
+- Confirm `PRIVACY.md` matches the shipped storage, retention, environment discovery, and network behavior.
+- Confirm copy failures produce visible feedback, overflow-menu actions support keyboard navigation, and confirmation dialogs enter the native modal layer with a safe initial focus.

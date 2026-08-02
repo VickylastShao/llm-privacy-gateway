@@ -41,12 +41,13 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
 button {
-  min-height: 40px;
+  min-height: 44px;
   padding: 9px 15px;
   border: 1px solid var(--border-strong);
   border-radius: 10px;
@@ -184,7 +185,7 @@ code {
 }
 
 .segmented > button {
-  min-height: 34px;
+  min-height: 44px;
   padding: 6px 11px;
   border: 0;
   border-radius: 8px;
@@ -214,6 +215,49 @@ code {
   border-radius: 18px;
   background: linear-gradient(145deg, rgb(23 37 58 / 96%), rgb(14 25 42 / 96%));
   box-shadow: 0 10px 30px rgb(0 0 0 / 12%);
+}
+
+.startup-issues {
+  margin-bottom: 22px;
+  padding: 18px 20px;
+  border: 1px solid #7b622e;
+  border-radius: 14px;
+  color: var(--warning);
+  background: rgb(73 55 20 / 42%);
+}
+
+.startup-issues h2 {
+  margin-bottom: 6px;
+  font-size: 18px;
+}
+
+.startup-issues > p {
+  margin-bottom: 12px;
+}
+
+.startup-issues ul {
+  display: grid;
+  gap: 8px;
+  padding: 0;
+  list-style: none;
+}
+
+.startup-issues li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding-top: 10px;
+  border-top: 1px solid rgb(242 198 109 / 24%);
+}
+
+.startup-issues li > div {
+  display: grid;
+  gap: 3px;
+}
+
+.startup-issues small {
+  color: var(--muted);
 }
 
 .intro-card h2,
@@ -291,7 +335,8 @@ form > label,
 }
 
 input:not([type="radio"]),
-textarea {
+textarea,
+select {
   width: 100%;
   min-height: 44px;
   padding: 10px 12px;
@@ -307,8 +352,72 @@ textarea::placeholder {
 }
 
 input:not([type="radio"]):focus,
-textarea:focus {
+textarea:focus,
+select:focus {
   border-color: var(--primary);
+}
+
+.select-shell {
+  position: relative;
+}
+
+.select-shell::after {
+  position: absolute;
+  top: 50%;
+  right: 14px;
+  width: 8px;
+  height: 8px;
+  transform: translateY(-70%) rotate(45deg);
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  pointer-events: none;
+  content: "";
+}
+
+select {
+  appearance: none;
+  padding-right: 42px;
+}
+
+.environment-import {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-soft);
+}
+
+.environment-import > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.discovery-list {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 8px;
+}
+
+.discovery-candidate {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+}
+
+.discovery-candidate[aria-pressed="true"] {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+
+.discovery-candidate span {
+  display: grid;
+  gap: 2px;
 }
 
 textarea {
@@ -363,7 +472,7 @@ legend {
 
 .segmented--protocol span {
   display: grid;
-  min-height: 40px;
+  min-height: 44px;
   place-items: center;
   border: 1px solid transparent;
   border-radius: 8px;
@@ -532,13 +641,82 @@ dd {
   width: 100%;
 }
 
+.connection-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.connection-ok,
+.connection-error {
+  display: block;
+  margin: 0 0 10px;
+}
+
+.connection-ok {
+  color: var(--success);
+}
+
+.connection-error {
+  color: var(--danger);
+}
+
+.usage-summary {
+  display: grid;
+  gap: 10px;
+  margin: 16px 0;
+  padding: 13px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: rgb(23 37 58 / 48%);
+}
+
+.usage-summary__heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.usage-metrics {
+  display: grid !important;
+  grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
+  gap: 8px !important;
+  margin: 0 !important;
+}
+
+.usage-metrics > div {
+  gap: 2px !important;
+}
+
+.usage-metrics dd {
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.balance-result {
+  margin: 0;
+  color: var(--success);
+  font-size: 13px;
+}
+
+.balance-error {
+  color: var(--danger);
+}
+
+.custom-term-count {
+  display: block;
+  margin-top: 10px;
+  color: var(--muted);
+}
+
 .overflow {
   position: relative;
 }
 
 .icon-button {
-  min-width: 38px;
-  min-height: 34px;
+  min-width: 44px;
+  min-height: 44px;
   padding: 4px 9px;
   border-color: transparent;
   background: transparent;
@@ -562,7 +740,7 @@ dd {
 
 .overflow-menu button {
   width: 100%;
-  min-height: 36px;
+  min-height: 44px;
   padding: 8px 10px;
   border-color: transparent;
   text-align: left;
@@ -596,6 +774,16 @@ dd {
   color: var(--foreground);
   background: var(--surface);
   box-shadow: 0 0 0 100vmax rgb(0 0 0 / 58%), var(--shadow);
+}
+
+.confirm-dialog::backdrop {
+  background: rgb(0 0 0 / 58%);
+}
+
+.copy-error {
+  display: block;
+  margin-top: 9px;
+  color: var(--danger);
 }
 
 .confirm-dialog h2 {

@@ -120,3 +120,39 @@ fn transformer_buffers_input_json_delta_until_block_stop_then_restores_json() {
     assert!(!output.contains(&token));
     assert!(output.contains("event: content_block_stop"));
 }
+
+#[test]
+fn transformer_restores_nested_tool_input_in_content_block_start() {
+    let mut map = PseudonymMap::new(Uuid::nil(), [8; 32], MemoryBackend::default());
+    let token = map
+        .pseudonymize("email", "alice@example.test")
+        .unwrap_or_else(|e| panic!("map: {e}"));
+    let source = format!(
+        "event: content_block_start\ndata: {{\"type\":\"content_block_start\",\"index\":1,\"content_block\":{{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"lookup\",\"input\":{{\"contact\":{{\"email\":\"{token}\"}},\"enabled\":true}}}}}}\n\n"
+    );
+
+    let output = restore_anthropic_sse(&source, &map).unwrap_or_else(|e| panic!("restore: {e}"));
+
+    let data = output
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .unwrap_or_else(|| panic!("event data"));
+    let value: serde_json::Value =
+        serde_json::from_str(data).unwrap_or_else(|e| panic!("event JSON: {e}"));
+    assert_eq!(
+        value["content_block"]["input"]["contact"]["email"],
+        "alice@example.test"
+    );
+    assert_eq!(value["content_block"]["input"]["enabled"], true);
+    assert!(!output.contains(&token));
+}
+
+#[test]
+fn transformer_preserves_signed_thinking_content_block_start_byte_for_byte() {
+    let map = PseudonymMap::new(Uuid::nil(), [9; 32], MemoryBackend::default());
+    let source = "event: content_block_start\r\ndata: { \"type\" : \"content_block_start\", \"index\" : 0, \"content_block\" : { \"type\" : \"thinking\", \"thinking\" : \"opaque\", \"signature\" : \"signed\" } }\r\n\r\n";
+
+    let output = restore_anthropic_sse(source, &map).unwrap_or_else(|e| panic!("restore: {e}"));
+
+    assert_eq!(output, source);
+}

@@ -7,6 +7,7 @@ mod error;
 mod runtime;
 mod server;
 mod upstream;
+mod usage;
 
 pub use activity::{ActivityEvent, ActivitySink, NoopActivitySink};
 pub use auth::{AuthProfile, GatewayProtocol, authenticate, local_key_digest};
@@ -19,5 +20,6 @@ pub use server::{
     start_with_state,
 };
 pub use upstream::upstream_client;
+pub use usage::{NoopUsageSink, TokenUsage, UsageEvent, UsageSink};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

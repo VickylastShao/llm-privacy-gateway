@@ -5,8 +5,20 @@
 /node_modules/
 /dist/
 
+# Local configuration and signing material must never enter source control.
+.env
+.env.*
+!.env.example
+*.pfx
+*.p12
+*.pem
+*.key
+
 # The Windows build needs only the tracked ICO plus its SVG source. `tauri icon`
 # can generate optional mobile and Apple assets locally when those targets are added.
 /apps/desktop/src-tauri/icons/*
 !/apps/desktop/src-tauri/icons/icon.ico
 !/apps/desktop/src-tauri/icons/icon.svg
+/apps/desktop/src-tauri/gen/
+/.gstack/
+.gstack/

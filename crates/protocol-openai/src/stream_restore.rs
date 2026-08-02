@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde_json::Value;
 use session_map::{MapError, MappingBackend, PseudonymMap};
 
@@ -19,9 +21,19 @@ pub struct OpenAiSseTransformer {
 
 #[derive(Debug, Default)]
 struct EventRestorers {
-    content: StreamRestorer,
-    reasoning: StreamRestorer,
-    root_delta: StreamRestorer,
+    streams: HashMap<String, StreamRestorer>,
+}
+
+impl EventRestorers {
+    fn stream(&mut self, key: String) -> &mut StreamRestorer {
+        self.streams.entry(key).or_default()
+    }
+
+    fn has_pending(self) -> bool {
+        self.streams
+            .into_values()
+            .any(|restorer| !restorer.finish().is_empty())
+    }
 }
 
 impl OpenAiSseTransformer {
@@ -57,16 +69,7 @@ impl OpenAiSseTransformer {
 
     pub fn finish(&mut self) -> Result<Vec<u8>, OpenAiProtocolError> {
         self.decoder.finish()?;
-        let EventRestorers {
-            content,
-            reasoning,
-            root_delta,
-        } = std::mem::take(&mut self.restorers);
-        if !self.utf8_tail.is_empty()
-            || !content.finish().is_empty()
-            || !reasoning.finish().is_empty()
-            || !root_delta.finish().is_empty()
-        {
+        if !self.utf8_tail.is_empty() || std::mem::take(&mut self.restorers).has_pending() {
             return Err(OpenAiProtocolError::IncompletePlaceholder);
         }
         Ok(Vec::new())
@@ -126,10 +129,8 @@ pub fn restore_openai_sse<B: MappingBackend>(
     for event in events {
         output.push_str(&transform_event(event, &mut restorers, map)?);
     }
-    if !restorers.content.finish().is_empty()
-        || !restorers.reasoning.finish().is_empty()
-        || !restorers.root_delta.finish().is_empty()
-    {
+    decoder.finish()?;
+    if restorers.has_pending() {
         return Err(OpenAiProtocolError::IncompletePlaceholder);
     }
     Ok(output)
@@ -164,20 +165,72 @@ fn restore_event_text<B: MappingBackend>(
     restorers: &mut EventRestorers,
     map: &PseudonymMap<B>,
 ) -> Result<(), OpenAiProtocolError> {
+    if let Some(response) = value.get_mut("response") {
+        crate::restore_responses_response(response, map)?;
+    }
+    if let Some(item) = value.get_mut("item") {
+        crate::response::restore_responses_item(item, map)?;
+    }
+    if let Some(part) = value.get_mut("part") {
+        crate::response::restore_responses_part(part, map)?;
+    }
     if let Some(choices) = value.get_mut("choices").and_then(Value::as_array_mut) {
-        for choice in choices {
+        for (choice_position, choice) in choices.iter_mut().enumerate() {
+            let choice_key = choice
+                .get("index")
+                .map(value_key_component)
+                .unwrap_or_else(|| choice_position.to_string());
             if let Some(delta) = choice.get_mut("delta") {
-                restore_delta_string(delta, "content", &mut restorers.content, map)?;
-                restore_delta_string(delta, "reasoning_content", &mut restorers.reasoning, map)?;
+                restore_delta_string(
+                    delta,
+                    "content",
+                    restorers,
+                    format!("chat:{choice_key}:content"),
+                    map,
+                )?;
+                restore_delta_string(
+                    delta,
+                    "reasoning_content",
+                    restorers,
+                    format!("chat:{choice_key}:reasoning"),
+                    map,
+                )?;
+                restore_delta_string(
+                    delta,
+                    "refusal",
+                    restorers,
+                    format!("chat:{choice_key}:refusal"),
+                    map,
+                )?;
+                if let Some(tool_calls) = delta.get_mut("tool_calls").and_then(Value::as_array_mut)
+                {
+                    for (tool_position, tool_call) in tool_calls.iter_mut().enumerate() {
+                        let tool_key = tool_call
+                            .get("index")
+                            .or_else(|| tool_call.get("id"))
+                            .map(value_key_component)
+                            .unwrap_or_else(|| tool_position.to_string());
+                        if let Some(function) = tool_call.get_mut("function") {
+                            restore_delta_string(
+                                function,
+                                "arguments",
+                                restorers,
+                                format!("chat:{choice_key}:tool:{tool_key}:arguments"),
+                                map,
+                            )?;
+                        }
+                    }
+                }
             }
         }
     }
+    let root_key = response_delta_key(value);
     if let Some(delta_value) = value.get_mut("delta") {
         let Some(delta) = delta_value.as_str() else {
             return Ok(());
         };
         let restored = restorers
-            .root_delta
+            .stream(root_key)
             .push(delta, map)
             .map_err(|_| OpenAiProtocolError::Privacy)?;
         *delta_value = Value::String(restored);
@@ -188,7 +241,8 @@ fn restore_event_text<B: MappingBackend>(
 fn restore_delta_string<B: MappingBackend>(
     delta: &mut Value,
     key: &str,
-    restorer: &mut StreamRestorer,
+    restorers: &mut EventRestorers,
+    stream_key: String,
     map: &PseudonymMap<B>,
 ) -> Result<(), OpenAiProtocolError> {
     let Some(value) = delta.get_mut(key) else {
@@ -197,9 +251,34 @@ fn restore_delta_string<B: MappingBackend>(
     let Some(text) = value.as_str() else {
         return Ok(());
     };
-    let restored = restorer
+    let restored = restorers
+        .stream(stream_key)
         .push(text, map)
         .map_err(|_| OpenAiProtocolError::Privacy)?;
     *value = Value::String(restored);
     Ok(())
+}
+
+fn response_delta_key(value: &Value) -> String {
+    let mut components = vec![
+        value
+            .get("type")
+            .map(value_key_component)
+            .unwrap_or_else(|| "unknown".to_owned()),
+    ];
+    for field in ["output_index", "item_id", "content_index", "summary_index"] {
+        components.push(
+            value
+                .get(field)
+                .map(value_key_component)
+                .unwrap_or_else(|| "-".to_owned()),
+        );
+    }
+    format!("responses:{}", components.join(":"))
+}
+
+fn value_key_component(value: &Value) -> String {
+    value
+        .as_str()
+        .map_or_else(|| value.to_string(), str::to_owned)
 }

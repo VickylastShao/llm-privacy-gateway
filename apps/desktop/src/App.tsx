@@ -1,5 +1,9 @@
 import { useEffect, useState } from "react";
-import { ConfirmDialog, type ProfileAction } from "./components/ConfirmDialog";
+import {
+  ConfirmDialog,
+  ModalDialog,
+  type ProfileAction,
+} from "./components/ConfirmDialog";
 import { ConnectionCard } from "./components/ConnectionCard";
 import { ConnectionForm } from "./components/ConnectionForm";
 import { OneTimeSecret } from "./components/OneTimeSecret";
@@ -16,10 +20,14 @@ import {
 import {
   localBaseUrl,
   type CreatedProfile,
+  type DiscoveredProfile,
+  type EditableProfile,
   type GatewayStatus,
   type ProfileDraft,
   type PrivacyActivityResponse,
   type ProfileSummary,
+  type StartupIssue,
+  type UsageResponse,
 } from "./model";
 
 type DisplayError = { summary: string; detail?: string };
@@ -34,8 +42,12 @@ export function App({
   const [locale, setLocale] = useState<Locale>(() => initialLocale(initialLanguage));
   const [status, setStatus] = useState<GatewayStatus>({ running: false });
   const [profiles, setProfiles] = useState<ProfileSummary[]>([]);
+  const [startupIssues, setStartupIssues] = useState<StartupIssue[]>([]);
+  const [recoveryIssue, setRecoveryIssue] = useState<StartupIssue | null>(null);
+  const [recoveryPending, setRecoveryPending] = useState(false);
   const [profilesLoaded, setProfilesLoaded] = useState(false);
   const [showForm, setShowForm] = useState(true);
+  const [editing, setEditing] = useState<EditableProfile | null>(null);
   const [created, setCreated] = useState<CreatedProfile | null>(null);
   const [error, setError] = useState<DisplayError | null>(null);
   const [gatewayPending, setGatewayPending] = useState(false);
@@ -47,6 +59,10 @@ export function App({
   const [activity, setActivity] = useState<PrivacyActivityResponse | null>(null);
   const [activityError, setActivityError] = useState(false);
   const [activityLimit, setActivityLimit] = useState(10);
+  const [discoveries, setDiscoveries] = useState<DiscoveredProfile[]>([]);
+  const [discoveryPending, setDiscoveryPending] = useState(false);
+  const [discoveryScanned, setDiscoveryScanned] = useState(false);
+  const [usage, setUsage] = useState<UsageResponse>({ profiles: [], retention_hours: 168 });
   const t = (key: TranslationKey, values?: Record<string, string>) =>
     translate(locale, key, values);
 
@@ -62,6 +78,7 @@ export function App({
       })
       .catch(reportError)
       .finally(() => setProfilesLoaded(true));
+    void api.listStartupIssues().then(setStartupIssues).catch(reportError);
   }, [api]);
 
   useEffect(() => {
@@ -77,6 +94,7 @@ export function App({
       .catch(() => {
         if (active) setActivityError(true);
       });
+    void api.queryUsage().then(setUsage).catch(() => undefined);
     return () => {
       active = false;
     };
@@ -101,9 +119,21 @@ export function App({
           setActivityError(false);
         })
         .catch(() => setActivityError(true));
+      void api.queryUsage().then(setUsage).catch(() => undefined);
     }, 1_000);
     return () => window.clearInterval(timer);
   }, [api, activityLimit, locale, status.running]);
+
+  useEffect(() => {
+    if (!profilesLoaded || !showForm || discoveryScanned) return;
+    setDiscoveryScanned(true);
+    setDiscoveryPending(true);
+    void api
+      .scanEnvironmentProfiles()
+      .then(setDiscoveries)
+      .catch(() => undefined)
+      .finally(() => setDiscoveryPending(false));
+  }, [api, discoveryScanned, profilesLoaded, showForm]);
 
   const changeLocale = (nextLocale: Locale) => {
     setLocale(nextLocale);
@@ -139,11 +169,64 @@ export function App({
       setProfiles((current) => [...current, next.profile]);
       setCreated(next);
       setShowForm(false);
+      setDiscoveries([]);
+      setDiscoveryScanned(false);
       setError(null);
     } catch (cause) {
       reportError(cause);
       throw cause;
     }
+  };
+
+  const saveProfile = async (draft: ProfileDraft) => {
+    if (!editing) return createProfile(draft);
+    try {
+      const next = await api.updateProfile(editing.id, draft);
+      setProfiles((current) =>
+        current.map((profile) => (profile.id === next.id ? next : profile)),
+      );
+      setEditing(null);
+      setShowForm(false);
+      setError(null);
+    } catch (cause) {
+      reportError(cause);
+      throw cause;
+    }
+  };
+
+  const editProfile = async (profile: ProfileSummary) => {
+    if (status.running) {
+      setError({ summary: t("stopBeforeChange") });
+      return;
+    }
+    try {
+      setEditing(await api.getProfileForEdit(profile.id));
+      setShowForm(true);
+      setError(null);
+    } catch (cause) {
+      reportError(cause);
+    }
+  };
+
+  const scanEnvironment = async () => {
+    setDiscoveryScanned(true);
+    setDiscoveryPending(true);
+    try {
+      setDiscoveries(await api.scanEnvironmentProfiles());
+      setError(null);
+    } catch (cause) {
+      reportError(cause);
+    } finally {
+      setDiscoveryPending(false);
+    }
+  };
+
+  const closeConnectionForm = () => {
+    setEditing(null);
+    setShowForm(false);
+    setDiscoveries([]);
+    setDiscoveryScanned(false);
+    void api.clearEnvironmentDiscoveries().catch(() => undefined);
   };
 
   const confirmProfileAction = async () => {
@@ -171,6 +254,29 @@ export function App({
     } finally {
       setProfileActionPending(false);
     }
+  };
+
+  const removeUnavailableProfile = async () => {
+    if (!recoveryIssue || status.running) return;
+    setRecoveryPending(true);
+    try {
+      await api.removeUnavailableProfile(recoveryIssue.profile_id);
+      setStartupIssues((current) =>
+        current.filter((issue) => issue.profile_id !== recoveryIssue.profile_id),
+      );
+      setRecoveryIssue(null);
+      setError(null);
+    } catch (cause) {
+      reportError(cause);
+    } finally {
+      setRecoveryPending(false);
+    }
+  };
+
+  const startupIssueReason = (issue: StartupIssue): TranslationKey => {
+    if (issue.reason === "invalid_mapping_key") return "startupIssueInvalidMapping";
+    if (issue.reason === "invalid_dictionary") return "startupIssueInvalidDictionary";
+    return "startupIssueMissingCredentials";
   };
 
   const startLabel = gatewayPending
@@ -221,6 +327,25 @@ export function App({
       </header>
 
       <div className="workflow">
+        {startupIssues.length > 0 && (
+          <section aria-labelledby="startup-issue-title" className="startup-issues" role="alert">
+            <h2 id="startup-issue-title">{t("startupIssueTitle")}</h2>
+            <p>{t("startupIssueDescription")}</p>
+            <ul>
+              {startupIssues.map((issue) => (
+                <li key={issue.profile_id}>
+                  <div>
+                    <strong>{issue.profile_name}</strong>
+                    <small>{t(startupIssueReason(issue))}</small>
+                  </div>
+                  <button onClick={() => setRecoveryIssue(issue)} type="button">
+                    {t("startupIssueRemove")}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
         {profiles.length === 0 && (
           <section aria-labelledby="first-run-title" className="intro-card">
             <h2 id="first-run-title">{t("firstRunTitle")}</h2>
@@ -244,15 +369,39 @@ export function App({
               <p>{t("connectionsDescription")}</p>
             </div>
             {profiles.length > 0 && !showForm && (
-              <button onClick={() => setShowForm(true)} type="button">
+              <button
+                onClick={() => {
+                  setEditing(null);
+                  setShowForm(true);
+                }}
+                type="button"
+              >
                 {t("addConnection")}
               </button>
             )}
           </div>
           {profilesLoaded && showForm && (
             <ConnectionForm
-              onCancel={profiles.length > 0 ? () => setShowForm(false) : undefined}
-              onSubmit={createProfile}
+              initial={editing ?? undefined}
+              key={editing?.id ?? "new-connection"}
+              discoveries={discoveries.map((candidate) => ({
+                ...candidate,
+                source:
+                  candidate.source === "user"
+                    ? t("environmentUser")
+                    : candidate.source === "system"
+                      ? t("environmentSystem")
+                      : t("environmentProcess"),
+              }))}
+              discoveryScanned={discoveryScanned}
+              discoveryPending={discoveryPending}
+              onCancel={
+                profiles.length > 0
+                  ? closeConnectionForm
+                  : undefined
+              }
+              onScanEnvironment={scanEnvironment}
+              onSubmit={saveProfile}
               t={t}
             />
           )}
@@ -262,9 +411,13 @@ export function App({
                 <div key={profile.id} role="listitem">
                   <ConnectionCard
                     onDelete={() => setProfileAction({ action: "delete", profile })}
+                    onEdit={() => void editProfile(profile)}
                     onRotate={() => setProfileAction({ action: "rotate", profile })}
+                    onQueryBalance={() => api.queryBalance(profile.id)}
+                    onTestConnection={() => api.testProfileConnection(profile.id)}
                     profile={profile}
                     t={t}
+                    usage={usage.profiles.find((item) => item.profile_id === profile.id)}
                   />
                 </div>
               ))}
@@ -307,6 +460,38 @@ export function App({
           profile={profileAction.profile}
           t={t}
         />
+      )}
+      {recoveryIssue && (
+        <ModalDialog
+          labelledBy="recovery-title"
+          onCancel={() => {
+            if (!recoveryPending) setRecoveryIssue(null);
+          }}
+        >
+          <h2 id="recovery-title">
+            {t("startupIssueRemoveTitle", { name: recoveryIssue.profile_name })}
+          </h2>
+          <p>{t("startupIssueRemoveDescription")}</p>
+          {status.running && <p className="blocked-message">{t("stopBeforeChange")}</p>}
+          <div className="dialog-actions">
+            <button
+              data-autofocus
+              disabled={recoveryPending}
+              onClick={() => setRecoveryIssue(null)}
+              type="button"
+            >
+              {t("cancel")}
+            </button>
+            <button
+              className="danger-button"
+              disabled={status.running || recoveryPending}
+              onClick={() => void removeUnavailableProfile()}
+              type="button"
+            >
+              {t("startupIssueRemove")}
+            </button>
+          </div>
+        </ModalDialog>
       )}
     </main>
   );

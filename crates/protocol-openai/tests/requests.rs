@@ -1,7 +1,8 @@
 use privacy_core::{Policy, PrivacyEngine, RequestPrivacyReport, StaticDictionary};
 use protocol_openai::{
-    restore_chat_response, transform_chat_request, transform_chat_request_with_report,
-    transform_responses_request, transform_responses_request_with_report,
+    restore_chat_response, restore_responses_response, transform_chat_request,
+    transform_chat_request_with_report, transform_responses_request,
+    transform_responses_request_with_report,
 };
 use serde_json::json;
 use session_map::{MemoryBackend, PseudonymMap};
@@ -44,6 +45,24 @@ fn chat_mutates_only_whitelisted_text_and_tool_arguments() {
 }
 
 #[test]
+fn chat_transforms_nested_arguments_from_compatible_providers() {
+    let (engine, mut map) = setup();
+    let mut request = json!({"messages":[{"role":"assistant","tool_calls":[{"function":{"name":"lookup","arguments":{"contact":{"project":"Alpha Project"},"enabled":true}}}]}]});
+
+    transform_chat_request(&mut request, &engine, &Policy::strict(), &mut map)
+        .unwrap_or_else(|error| panic!("transform: {error}"));
+
+    assert_ne!(
+        request["messages"][0]["tool_calls"][0]["function"]["arguments"]["contact"]["project"],
+        "Alpha Project"
+    );
+    assert_eq!(
+        request["messages"][0]["tool_calls"][0]["function"]["arguments"]["enabled"],
+        true
+    );
+}
+
+#[test]
 fn responses_preserves_ids_and_encrypted_reasoning() {
     let (engine, mut map) = setup();
     let mut request = json!({"instructions":"Alpha Project","input":[{"type":"message","content":[{"type":"input_text","text":"Alpha Project"},{"type":"input_image","file_id":"Alpha Project"}]},{"type":"function_call_output","call_id":"Alpha Project","output":"Alpha Project"}],"reasoning":{"encrypted_content":"Alpha Project"}});
@@ -61,6 +80,18 @@ fn responses_preserves_ids_and_encrypted_reasoning() {
 }
 
 #[test]
+fn responses_transforms_text_parts_in_function_call_output_lists() {
+    let (engine, mut map) = setup();
+    let mut request = json!({"input":[{"type":"function_call_output","call_id":"call_1","output":[{"type":"input_text","text":"Alpha Project"},{"type":"input_file","file_id":"Alpha Project"}]}]});
+
+    transform_responses_request(&mut request, &engine, &Policy::strict(), &mut map)
+        .unwrap_or_else(|error| panic!("transform: {error}"));
+
+    assert_ne!(request["input"][0]["output"][0]["text"], "Alpha Project");
+    assert_eq!(request["input"][0]["output"][1]["file_id"], "Alpha Project");
+}
+
+#[test]
 fn chat_response_restores_message_and_reasoning_text() {
     let mut map = PseudonymMap::new(Uuid::nil(), [15; 32], MemoryBackend::default());
     let token = map
@@ -70,7 +101,11 @@ fn chat_response_restores_message_and_reasoning_text() {
         "choices": [{
             "message": {
                 "content": token,
-                "reasoning_content": format!("repeat {token}")
+                "reasoning_content": format!("repeat {token}"),
+                "tool_calls": [{
+                    "id": "call_1",
+                    "function": {"name": "lookup", "arguments": format!(r#"{{"email":"{token}"}}"#)}
+                }]
             }
         }]
     });
@@ -85,6 +120,47 @@ fn chat_response_restores_message_and_reasoning_text() {
         response["choices"][0]["message"]["reasoning_content"],
         "repeat alice@example.test"
     );
+    assert_eq!(
+        response["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"],
+        r#"{"email":"alice@example.test"}"#
+    );
+}
+
+#[test]
+fn responses_response_restores_function_call_arguments() {
+    let mut map = PseudonymMap::new(Uuid::nil(), [16; 32], MemoryBackend::default());
+    let token = map
+        .pseudonymize("email", "alice@example.test")
+        .unwrap_or_else(|error| panic!("map: {error}"));
+    let mut response = json!({
+        "output_text": format!("Contact {token}"),
+        "output": [
+            {"type":"message","content":[{"type":"output_text","text":format!("Contact {token}")}]},
+            {"type":"function_call","call_id":"call_1","name":"lookup","arguments":format!(r#"{{"email":"{token}"}}"#)},
+            {"type":"function_call_output","call_id":"call_1","output":[
+                {"type":"input_text","text":format!("Result {token}")},
+                {"type":"input_file","file_id":token}
+            ]}
+        ]
+    });
+
+    restore_responses_response(&mut response, &map)
+        .unwrap_or_else(|error| panic!("restore: {error}"));
+
+    assert_eq!(response["output_text"], "Contact alice@example.test");
+    assert_eq!(
+        response["output"][0]["content"][0]["text"],
+        "Contact alice@example.test"
+    );
+    assert_eq!(
+        response["output"][1]["arguments"],
+        r#"{"email":"alice@example.test"}"#
+    );
+    assert_eq!(
+        response["output"][2]["output"][0]["text"],
+        "Result alice@example.test"
+    );
+    assert_eq!(response["output"][2]["output"][1]["file_id"], token);
 }
 
 #[test]

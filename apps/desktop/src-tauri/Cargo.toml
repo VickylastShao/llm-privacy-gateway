@@ -2,6 +2,8 @@
 name = "lpg-desktop"
 version = "0.1.0"
 edition = "2024"
+license = "Apache-2.0"
+rust-version = "1.97"
 
 [dependencies]
 activity-service = { path = "../../../crates/activity-service" }
@@ -10,12 +12,25 @@ gateway = { path = "../../../crates/gateway", version = "0.1.0" }
 privacy-core = { path = "../../../crates/privacy-core", version = "0.1.0" }
 secret-store = { path = "../../../crates/secret-store", version = "0.1.0" }
 rand = "0.9"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rusqlite = { version = "0.37", features = ["backup"] }
 secrecy = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = ["tray-icon"] }
-tokio = { version = "1", features = ["sync"] }
+tokio = { version = "1", features = ["sync", "time"] }
 uuid = { version = "1", features = ["v4"] }
+url = "2"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
 
 [build-dependencies]
 tauri-build = "2"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"

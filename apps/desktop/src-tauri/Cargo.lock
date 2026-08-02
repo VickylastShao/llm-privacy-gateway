@@ -1989,6 +1989,8 @@ dependencies = [
  "gateway",
  "privacy-core",
  "rand 0.9.5",
+ "reqwest 0.12.28",
+ "rusqlite",
  "secrecy",
  "secret-store",
  "serde",
@@ -1996,7 +1998,9 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tokio",
+ "url",
  "uuid",
+ "winreg",
 ]
 
 [[package]]

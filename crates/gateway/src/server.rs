@@ -318,6 +318,7 @@ where
     };
     let started = Instant::now();
     let occurred_at_ms = now_ms();
+    let usage_id = uuid::Uuid::new_v4();
     let request_id = request_id(&headers, &profile.engine);
     let model = request_model(&body, &profile.engine);
     let mut report = RequestPrivacyReport::default();
@@ -331,7 +332,7 @@ where
                 &state,
                 profile_id,
                 path,
-                model,
+                model.clone(),
                 StatusCode::FORBIDDEN,
                 started,
                 request_id,
@@ -376,11 +377,19 @@ where
     match request.send().await {
         Ok(response) => {
             let status = response.status();
+            publish_request_usage(
+                &state,
+                usage_id,
+                occurred_at_ms,
+                profile_id,
+                model.clone(),
+                None,
+            );
             publish_activity(
                 &state,
                 profile_id,
                 path,
-                model,
+                model.clone(),
                 status,
                 started,
                 request_id,
@@ -394,6 +403,12 @@ where
                 .is_some_and(|value| value.starts_with("text/event-stream"));
             if is_sse && protocol == GatewayProtocol::OpenAi {
                 let profile = Arc::clone(profile);
+                let usage_sink = Arc::clone(&state.usage_sink);
+                let stream_usage_id = usage_id;
+                let usage_profile_id = profile_id;
+                let usage_model = model.clone();
+                let usage = Arc::new(std::sync::Mutex::new(UsageAccumulator::new(protocol)));
+                let observing = Arc::clone(&usage);
                 let transformer = Arc::new(std::sync::Mutex::new(
                     protocol_openai::OpenAiSseTransformer::default(),
                 ));
@@ -401,6 +416,9 @@ where
                 let transformed = response.bytes_stream().map(move |chunk| {
                     let bytes =
                         chunk.map_err(|_| std::io::Error::other("upstream response failed"))?;
+                    if let Ok(mut usage) = observing.lock() {
+                        usage.push(&bytes);
+                    }
                     let mut transformer = transforming
                         .lock()
                         .map_err(|_| std::io::Error::other("SSE transformer unavailable"))?;
@@ -414,14 +432,28 @@ where
                         .map_err(|_| std::io::Error::other("SSE restoration failed"))
                 });
                 let final_transformer = Arc::clone(&transformer);
+                let final_usage = Arc::clone(&usage);
                 let trailing = stream::once(async move {
                     let mut transformer = final_transformer
                         .lock()
                         .map_err(|_| std::io::Error::other("SSE transformer unavailable"))?;
-                    transformer
+                    let restored = transformer
                         .finish()
                         .map(Bytes::from)
-                        .map_err(|_| std::io::Error::other("SSE restoration failed"))
+                        .map_err(|_| std::io::Error::other("SSE restoration failed"))?;
+                    if let Ok(mut usage) = final_usage.lock()
+                        && let Some(usage) = usage.finish()
+                    {
+                        let _ = usage_sink.publish_usage(crate::UsageEvent {
+                            id: stream_usage_id,
+                            occurred_at_ms,
+                            profile_id: usage_profile_id,
+                            model: usage_model,
+                            reported: true,
+                            usage,
+                        });
+                    }
+                    Ok::<Bytes, std::io::Error>(restored)
                 });
                 let mut result = Response::new(Body::from_stream(transformed.chain(trailing)));
                 *result.status_mut() = status;
@@ -430,6 +462,12 @@ where
             }
             if is_sse && protocol == GatewayProtocol::Anthropic {
                 let profile = Arc::clone(profile);
+                let usage_sink = Arc::clone(&state.usage_sink);
+                let stream_usage_id = usage_id;
+                let usage_profile_id = profile_id;
+                let usage_model = model.clone();
+                let usage = Arc::new(std::sync::Mutex::new(UsageAccumulator::new(protocol)));
+                let observing = Arc::clone(&usage);
                 let transformer = Arc::new(std::sync::Mutex::new(
                     protocol_anthropic::AnthropicSseTransformer::default(),
                 ));
@@ -437,6 +475,9 @@ where
                 let transformed = response.bytes_stream().map(move |chunk| {
                     let bytes =
                         chunk.map_err(|_| std::io::Error::other("upstream response failed"))?;
+                    if let Ok(mut usage) = observing.lock() {
+                        usage.push(&bytes);
+                    }
                     let mut transformer = transforming
                         .lock()
                         .map_err(|_| std::io::Error::other("SSE transformer unavailable"))?;
@@ -450,14 +491,28 @@ where
                         .map_err(|_| std::io::Error::other("SSE restoration failed"))
                 });
                 let final_transformer = Arc::clone(&transformer);
+                let final_usage = Arc::clone(&usage);
                 let trailing = stream::once(async move {
                     let mut transformer = final_transformer
                         .lock()
                         .map_err(|_| std::io::Error::other("SSE transformer unavailable"))?;
-                    transformer
+                    let restored = transformer
                         .finish()
                         .map(Bytes::from)
-                        .map_err(|_| std::io::Error::other("SSE restoration failed"))
+                        .map_err(|_| std::io::Error::other("SSE restoration failed"))?;
+                    if let Ok(mut usage) = final_usage.lock()
+                        && let Some(usage) = usage.finish()
+                    {
+                        let _ = usage_sink.publish_usage(crate::UsageEvent {
+                            id: stream_usage_id,
+                            occurred_at_ms,
+                            profile_id: usage_profile_id,
+                            model: usage_model,
+                            reported: true,
+                            usage,
+                        });
+                    }
+                    Ok::<Bytes, std::io::Error>(restored)
                 });
                 let mut result = Response::new(Body::from_stream(transformed.chain(trailing)));
                 *result.status_mut() = status;
@@ -466,6 +521,16 @@ where
             }
             match response.bytes().await {
                 Ok(mut bytes) => {
+                    if let Some(usage) = usage_from_json(&bytes, protocol) {
+                        let _ = state.usage_sink.publish_usage(crate::UsageEvent {
+                            id: usage_id,
+                            occurred_at_ms,
+                            profile_id,
+                            model: model.clone(),
+                            reported: true,
+                            usage,
+                        });
+                    }
                     if matches!(
                         response_adapter,
                         ResponseAdapter::OpenAiChat | ResponseAdapter::OpenAiResponses
@@ -554,11 +619,19 @@ where
             }
         }
         Err(_) => {
+            publish_request_usage(
+                &state,
+                usage_id,
+                occurred_at_ms,
+                profile_id,
+                model.clone(),
+                None,
+            );
             publish_activity(
                 &state,
                 profile_id,
                 path,
-                model,
+                model.clone(),
                 StatusCode::BAD_GATEWAY,
                 started,
                 request_id,
@@ -568,6 +641,155 @@ where
             (StatusCode::BAD_GATEWAY, "upstream request failed").into_response()
         }
     }
+}
+
+fn publish_request_usage(
+    state: &GatewayState,
+    id: uuid::Uuid,
+    occurred_at_ms: i64,
+    profile_id: uuid::Uuid,
+    model: String,
+    usage: Option<crate::TokenUsage>,
+) {
+    let _ = state.usage_sink.publish_usage(crate::UsageEvent {
+        id,
+        occurred_at_ms,
+        profile_id,
+        model,
+        reported: usage.is_some(),
+        usage: usage.unwrap_or_default(),
+    });
+}
+
+const MAX_USAGE_SSE_EVENT_BYTES: usize = 256 * 1024;
+
+struct UsageAccumulator {
+    protocol: GatewayProtocol,
+    pending: Vec<u8>,
+    usage: crate::TokenUsage,
+}
+
+impl UsageAccumulator {
+    fn new(protocol: GatewayProtocol) -> Self {
+        Self {
+            protocol,
+            pending: Vec::new(),
+            usage: crate::TokenUsage::default(),
+        }
+    }
+
+    fn push(&mut self, bytes: &[u8]) {
+        if self.pending.len().saturating_add(bytes.len()) > MAX_USAGE_SSE_EVENT_BYTES {
+            self.pending.clear();
+            return;
+        }
+        self.pending.extend_from_slice(bytes);
+        while let Some(end) = sse_event_end(&self.pending) {
+            let event = self.pending.drain(..end).collect::<Vec<_>>();
+            self.observe_event(&event);
+        }
+    }
+
+    fn observe_event(&mut self, event: &[u8]) {
+        let Ok(text) = std::str::from_utf8(event) else {
+            return;
+        };
+        let data = text
+            .lines()
+            .filter_map(|line| line.strip_prefix("data:"))
+            .map(str::trim_start)
+            .collect::<Vec<_>>()
+            .join("\n");
+        if data.is_empty() || data == "[DONE]" {
+            return;
+        }
+        if let Some(usage) = usage_from_json(data.as_bytes(), self.protocol) {
+            self.usage.input_tokens = self.usage.input_tokens.max(usage.input_tokens);
+            self.usage.output_tokens = self.usage.output_tokens.max(usage.output_tokens);
+            self.usage.total_tokens = self.usage.total_tokens.max(usage.total_tokens);
+            self.usage.cached_tokens = self.usage.cached_tokens.max(usage.cached_tokens);
+        }
+    }
+
+    fn finish(&mut self) -> Option<crate::TokenUsage> {
+        if !self.pending.is_empty() {
+            let pending = std::mem::take(&mut self.pending);
+            self.observe_event(&pending);
+        }
+        if self.protocol == GatewayProtocol::Anthropic {
+            self.usage.total_tokens = self
+                .usage
+                .input_tokens
+                .saturating_add(self.usage.output_tokens)
+                .saturating_add(self.usage.cached_tokens);
+        } else if self.usage.total_tokens == 0 {
+            self.usage.total_tokens = self
+                .usage
+                .input_tokens
+                .saturating_add(self.usage.output_tokens);
+        }
+        (!self.usage.is_empty()).then_some(self.usage)
+    }
+}
+
+fn sse_event_end(bytes: &[u8]) -> Option<usize> {
+    bytes
+        .windows(2)
+        .position(|window| window == b"\n\n")
+        .map(|index| index + 2)
+        .or_else(|| {
+            bytes
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .map(|index| index + 4)
+        })
+}
+
+fn usage_from_json(bytes: &[u8], protocol: GatewayProtocol) -> Option<crate::TokenUsage> {
+    let value = serde_json::from_slice::<serde_json::Value>(bytes).ok()?;
+    let usage = value.get("usage").or_else(|| {
+        value
+            .get("response")
+            .and_then(|response| response.get("usage"))
+    })?;
+    let input_tokens = json_u64(usage, "prompt_tokens")
+        .or_else(|| json_u64(usage, "input_tokens"))
+        .unwrap_or(0);
+    let output_tokens = json_u64(usage, "completion_tokens")
+        .or_else(|| json_u64(usage, "output_tokens"))
+        .unwrap_or(0);
+    let cached_tokens = usage
+        .get("prompt_tokens_details")
+        .and_then(|details| json_u64(details, "cached_tokens"))
+        .or_else(|| {
+            usage
+                .get("input_tokens_details")
+                .and_then(|details| json_u64(details, "cached_tokens"))
+        })
+        .or_else(|| json_u64(usage, "cached_tokens"))
+        .or_else(|| json_u64(usage, "cache_read_input_tokens"))
+        .unwrap_or(0);
+    let cache_creation = json_u64(usage, "cache_creation_input_tokens").unwrap_or(0);
+    let total_tokens = json_u64(usage, "total_tokens").unwrap_or_else(|| {
+        input_tokens.saturating_add(output_tokens).saturating_add(
+            if protocol == GatewayProtocol::Anthropic {
+                cached_tokens.saturating_add(cache_creation)
+            } else {
+                0
+            },
+        )
+    });
+    let result = crate::TokenUsage {
+        input_tokens,
+        output_tokens,
+        total_tokens,
+        cached_tokens: cached_tokens.saturating_add(cache_creation),
+    };
+    (!result.is_empty()).then_some(result)
+}
+
+fn json_u64(value: &serde_json::Value, key: &str) -> Option<u64> {
+    value.get(key).and_then(serde_json::Value::as_u64)
 }
 
 fn copy_safe_request_headers(
@@ -691,4 +913,51 @@ fn request_id_character(character: char) -> bool {
 
 fn model_character(character: char) -> bool {
     request_id_character(character) || matches!(character, '/' | '@' | '+')
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::*;
+
+    #[test]
+    fn reads_chat_completions_usage_and_cached_tokens() {
+        let body = br#"{"usage":{"prompt_tokens":120,"completion_tokens":30,"total_tokens":150,"prompt_tokens_details":{"cached_tokens":80}}}"#;
+        let usage = match usage_from_json(body, GatewayProtocol::OpenAi) {
+            Some(usage) => usage,
+            None => panic!("usage missing"),
+        };
+        assert_eq!(usage.input_tokens, 120);
+        assert_eq!(usage.output_tokens, 30);
+        assert_eq!(usage.total_tokens, 150);
+        assert_eq!(usage.cached_tokens, 80);
+    }
+
+    #[test]
+    fn reads_nested_responses_api_usage() {
+        let body = br#"{"type":"response.completed","response":{"usage":{"input_tokens":42,"output_tokens":8,"total_tokens":50,"input_tokens_details":{"cached_tokens":12}}}}"#;
+        let usage = match usage_from_json(body, GatewayProtocol::OpenAi) {
+            Some(usage) => usage,
+            None => panic!("usage missing"),
+        };
+        assert_eq!(usage.total_tokens, 50);
+        assert_eq!(usage.cached_tokens, 12);
+    }
+
+    #[test]
+    fn combines_anthropic_usage_across_split_sse_chunks() {
+        let mut accumulator = UsageAccumulator::new(GatewayProtocol::Anthropic);
+        accumulator.push(
+            b"event: message_start\ndata: {\"usage\":{\"input_tokens\":10,\"cache_read_input_tokens\":4}}\n\n",
+        );
+        accumulator.push(b"event: message_delta\ndata: {\"usage\":{\"out");
+        accumulator.push(b"put_tokens\":7}}\n\n");
+        let usage = match accumulator.finish() {
+            Some(usage) => usage,
+            None => panic!("usage missing"),
+        };
+        assert_eq!(usage.input_tokens, 10);
+        assert_eq!(usage.output_tokens, 7);
+        assert_eq!(usage.cached_tokens, 4);
+        assert_eq!(usage.total_tokens, 21);
+    }
 }

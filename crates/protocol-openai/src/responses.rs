@@ -56,14 +56,43 @@ fn transform_input<P: Pseudonymizer>(
                 if matches!(
                     item.get("type").and_then(Value::as_str),
                     Some("function_call_output")
-                ) {
-                    transform_string_field(item, "output", engine, policy, map, report)?;
+                ) && let Some(output) = item.get_mut("output")
+                {
+                    transform_function_output(output, engine, policy, map, report)?;
                 }
             }
         }
         _ => {}
     }
     Ok(())
+}
+
+fn transform_function_output<P: Pseudonymizer>(
+    output: &mut Value,
+    engine: &PrivacyEngine,
+    policy: &Policy,
+    map: &mut P,
+    report: &mut RequestPrivacyReport,
+) -> Result<(), OpenAiProtocolError> {
+    match output {
+        Value::String(text) => {
+            *text = engine
+                .transform_reported(text, policy, map, report)
+                .map_err(|_| OpenAiProtocolError::Privacy)?
+                .outbound_text()
+                .to_owned();
+            Ok(())
+        }
+        Value::Array(parts) => {
+            for part in parts {
+                if part.get("type").and_then(Value::as_str) == Some("input_text") {
+                    transform_string_field(part, "text", engine, policy, map, report)?;
+                }
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
 }
 
 fn transform_content<P: Pseudonymizer>(

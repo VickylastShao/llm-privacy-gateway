@@ -7,12 +7,19 @@ type Props = { created: CreatedProfile; onDismiss: () => void; t: Translator };
 export function OneTimeSecret({ created, onDismiss, t }: Props) {
   const container = useRef<HTMLElement>(null);
   const [copied, setCopied] = useState<string | null>(null);
+  const [copyError, setCopyError] = useState(false);
 
   useEffect(() => container.current?.focus(), [created.local_key]);
 
   const copy = async (name: string, value: string) => {
-    await navigator.clipboard.writeText(value);
-    setCopied(name);
+    setCopyError(false);
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(name);
+    } catch {
+      setCopied(null);
+      setCopyError(true);
+    }
   };
   const isAnthropic = created.profile.protocol === "anthropic";
   const baseVariable = isAnthropic ? "ANTHROPIC_BASE_URL" : "OPENAI_BASE_URL";
@@ -53,6 +60,7 @@ export function OneTimeSecret({ created, onDismiss, t }: Props) {
         </button>
         <button onClick={onDismiss} type="button">{t("dismissSecret")}</button>
       </div>
+      {copyError && <small className="copy-error" role="alert">{t("copyFailed")}</small>}
     </article>
   );
 }

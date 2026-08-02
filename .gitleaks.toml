@@ -1,0 +1,12 @@
+title = "LLM Privacy Gateway secret-scanning policy"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Synthetic JWT and private-key fixtures used to test local privacy detection"
+targetRules = ["jwt", "private-key"]
+paths = [
+  '''^privacy-evals/credentials\.jsonl$''',
+  '''^crates/privacy-core/tests/detectors\.rs$''',
+]

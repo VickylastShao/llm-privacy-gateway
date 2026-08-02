@@ -51,17 +51,43 @@ fn transform_message<P: Pseudonymizer>(
                 .get_mut("function")
                 .and_then(|function| function.get_mut("arguments"))
             {
-                let Some(arguments) = arguments_value.as_str() else {
-                    continue;
-                };
-                let transformed = engine
-                    .transform_reported(arguments, policy, map, report)
-                    .map_err(|_| OpenAiProtocolError::Privacy)?;
-                *arguments_value = Value::String(transformed.outbound_text().to_owned());
+                transform_json_strings(arguments_value, engine, policy, map, report)?;
             }
         }
     }
     Ok(())
+}
+
+fn transform_json_strings<P: Pseudonymizer>(
+    value: &mut Value,
+    engine: &PrivacyEngine,
+    policy: &Policy,
+    map: &mut P,
+    report: &mut RequestPrivacyReport,
+) -> Result<(), OpenAiProtocolError> {
+    match value {
+        Value::String(text) => {
+            *text = engine
+                .transform_reported(text, policy, map, report)
+                .map_err(|_| OpenAiProtocolError::Privacy)?
+                .outbound_text()
+                .to_owned();
+            Ok(())
+        }
+        Value::Array(values) => {
+            for value in values {
+                transform_json_strings(value, engine, policy, map, report)?;
+            }
+            Ok(())
+        }
+        Value::Object(values) => {
+            for value in values.values_mut() {
+                transform_json_strings(value, engine, policy, map, report)?;
+            }
+            Ok(())
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => Ok(()),
+    }
 }
 
 fn transform_content<P: Pseudonymizer>(

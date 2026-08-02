@@ -5,7 +5,8 @@ use axum::{
 };
 use gateway::{
     ActivityEvent, ActivitySink, AuthProfile, GatewayConfig, GatewayError, GatewayProtocol,
-    GatewayState, RuntimeProfile, authenticate, gateway_router, local_key_digest, router,
+    GatewayState, RuntimeProfile, UsageEvent, UsageSink, authenticate, gateway_router,
+    local_key_digest, router,
 };
 use http_body_util::BodyExt;
 use privacy_core::{EntityKind, PolicyAction, StaticDictionary};
@@ -72,6 +73,21 @@ struct RejectingSink;
 impl ActivitySink for RejectingSink {
     fn publish(&self, _event: ActivityEvent) -> bool {
         false
+    }
+}
+
+#[derive(Default)]
+struct CollectingUsageSink {
+    events: Mutex<Vec<UsageEvent>>,
+}
+
+impl UsageSink for CollectingUsageSink {
+    fn publish_usage(&self, event: UsageEvent) -> bool {
+        self.events
+            .lock()
+            .unwrap_or_else(|_| panic!("usage lock"))
+            .push(event);
+        true
     }
 }
 
@@ -608,6 +624,92 @@ async fn anthropic_gateway_forwards_signed_thinking_blocks_as_raw_json() {
 }
 
 #[tokio::test]
+async fn anthropic_gateway_filters_and_restores_nested_tool_input() {
+    let captured = Arc::new(Mutex::new(String::new()));
+    let mock = axum::Router::new()
+        .route(
+            "/v1/messages",
+            post(
+                |State(captured): State<Arc<Mutex<String>>>, body: String| async move {
+                    *captured.lock().unwrap_or_else(|_| panic!("capture lock")) = body.clone();
+                    let input = serde_json::from_str::<serde_json::Value>(&body)
+                        .unwrap_or_else(|error| panic!("mock JSON: {error}"))["messages"][0]
+                        ["content"][0]["input"]
+                        .clone();
+                    serde_json::json!({
+                        "id": "msg_mock",
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{
+                            "type": "tool_use",
+                            "id": "toolu_1",
+                            "name": "lookup",
+                            "input": input
+                        }],
+                        "model": "mock",
+                        "stop_reason": "tool_use",
+                        "usage": {"input_tokens": 1, "output_tokens": 1}
+                    })
+                    .to_string()
+                },
+            ),
+        )
+        .with_state(captured.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap_or_else(|error| panic!("mock bind: {error}"));
+    let address = listener
+        .local_addr()
+        .unwrap_or_else(|error| panic!("mock address: {error}"));
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, mock).await;
+    });
+    let state = GatewayState::new([RuntimeProfile::new(
+        Uuid::nil(),
+        GatewayProtocol::Anthropic,
+        "local-anthropic-tool-key".to_owned(),
+        format!("http://{address}"),
+        SecretString::from("upstream-key"),
+        [26; 32],
+    )])
+    .unwrap_or_else(|error| panic!("gateway state: {error}"));
+
+    let response = gateway_router(state)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("x-api-key", "local-anthropic-tool-key")
+                .header("anthropic-version", "2023-06-01")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(
+                    r#"{"model":"test","max_tokens":8,"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"lookup","input":{"contact":{"email":"alice@example.test"},"enabled":true}}]}]}"#,
+                ))
+                .unwrap_or_else(|error| panic!("request: {error}")),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("gateway response: {error}"));
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .unwrap_or_else(|error| panic!("body: {error}"))
+        .to_bytes();
+    let value: serde_json::Value =
+        serde_json::from_slice(&bytes).unwrap_or_else(|error| panic!("response JSON: {error}"));
+    assert_eq!(
+        value["content"][0]["input"]["contact"]["email"],
+        "alice@example.test"
+    );
+    assert_eq!(value["content"][0]["input"]["enabled"], true);
+    let captured = captured.lock().unwrap_or_else(|_| panic!("capture lock"));
+    assert!(!captured.contains("alice@example.test"));
+    assert!(captured.contains("__LPG_"));
+}
+
+#[tokio::test]
 async fn responses_and_count_tokens_do_not_forward_plaintext_canaries() {
     let captured: Captures = Arc::new(Mutex::new(Vec::new()));
     let mock = axum::Router::new()
@@ -733,8 +835,13 @@ async fn openai_upstream_base_url_is_used_without_injecting_a_v1_prefix() {
         SecretString::from("upstream-key"),
         [14; 32],
     );
-    let state =
-        GatewayState::new([profile]).unwrap_or_else(|error| panic!("gateway state: {error}"));
+    let usage_sink = Arc::new(CollectingUsageSink::default());
+    let state = GatewayState::new_with_sinks(
+        [profile],
+        Arc::new(CollectingSink::default()),
+        usage_sink.clone(),
+    )
+    .unwrap_or_else(|error| panic!("gateway state: {error}"));
     let response = gateway_router(state)
         .oneshot(
             Request::builder()
@@ -750,6 +857,13 @@ async fn openai_upstream_base_url_is_used_without_injecting_a_v1_prefix() {
         .await
         .unwrap_or_else(|error| panic!("gateway response: {error}"));
     assert_eq!(response.status(), StatusCode::OK);
+    let usage = usage_sink
+        .events
+        .lock()
+        .unwrap_or_else(|_| panic!("usage lock"));
+    assert_eq!(usage.len(), 1);
+    assert!(!usage[0].reported);
+    assert!(usage[0].usage.is_empty());
 }
 
 #[tokio::test]

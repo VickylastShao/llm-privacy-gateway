@@ -3,6 +3,7 @@
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use rusqlite::{Connection, OptionalExtension, params};
@@ -77,6 +78,29 @@ pub struct Activity {
     pub actions: Vec<String>,
     pub request_id: String,
 }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UsageRecord {
+    pub id: Uuid,
+    pub occurred_at_ms: i64,
+    pub profile_id: Uuid,
+    pub model: String,
+    pub reported: bool,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+    pub cached_tokens: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UsageTotal {
+    pub profile_id: Uuid,
+    pub request_count: u64,
+    pub metered_request_count: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+    pub cached_tokens: u64,
+}
 pub struct Repository {
     connection: Connection,
 }
@@ -142,9 +166,16 @@ impl Repository {
         Self::initialize(connection)
     }
 
-    fn initialize(connection: Connection) -> Result<Self, StoreError> {
-        connection.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY); CREATE TABLE IF NOT EXISTS profiles(id TEXT PRIMARY KEY,name TEXT NOT NULL,protocol TEXT NOT NULL,upstream_url TEXT NOT NULL,upstream_secret_ref TEXT NOT NULL,local_secret_ref TEXT NOT NULL,local_key_digest BLOB NOT NULL,policy TEXT NOT NULL); CREATE TABLE IF NOT EXISTS pseudonym_records(profile_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,token TEXT NOT NULL,kind TEXT NOT NULL,nonce BLOB NOT NULL,ciphertext BLOB NOT NULL,PRIMARY KEY(profile_id,token)); INSERT OR IGNORE INTO schema_migrations VALUES(1);").map_err(|_| StoreError::Database)?;
-        let has_timestamp = connection
+    fn initialize(mut connection: Connection) -> Result<Self, StoreError> {
+        connection
+            .busy_timeout(Duration::from_secs(5))
+            .map_err(|_| StoreError::Database)?;
+        connection
+            .execute_batch("PRAGMA foreign_keys=ON;")
+            .map_err(|_| StoreError::Database)?;
+        let transaction = connection.transaction().map_err(|_| StoreError::Database)?;
+        transaction.execute_batch("CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY); CREATE TABLE IF NOT EXISTS profiles(id TEXT PRIMARY KEY,name TEXT NOT NULL,protocol TEXT NOT NULL,upstream_url TEXT NOT NULL,upstream_secret_ref TEXT NOT NULL,local_secret_ref TEXT NOT NULL,local_key_digest BLOB NOT NULL,policy TEXT NOT NULL); CREATE TABLE IF NOT EXISTS pseudonym_records(profile_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,token TEXT NOT NULL,kind TEXT NOT NULL,nonce BLOB NOT NULL,ciphertext BLOB NOT NULL,PRIMARY KEY(profile_id,token)); INSERT OR IGNORE INTO schema_migrations VALUES(1);").map_err(|_| StoreError::Database)?;
+        let has_timestamp = transaction
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM pragma_table_info('activities') WHERE name='occurred_at_ms')",
                 [],
@@ -152,13 +183,30 @@ impl Repository {
             )
             .map_err(|_| StoreError::Database)?;
         if !has_timestamp {
-            connection
+            transaction
                 .execute_batch("DROP TABLE IF EXISTS activities; CREATE TABLE activities(id TEXT PRIMARY KEY,occurred_at_ms INTEGER NOT NULL,profile_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,endpoint TEXT NOT NULL,model TEXT NOT NULL,status INTEGER NOT NULL,latency_ms INTEGER NOT NULL,category_counts TEXT NOT NULL,actions TEXT NOT NULL,request_id TEXT NOT NULL); INSERT OR IGNORE INTO schema_migrations VALUES(2);")
                 .map_err(|_| StoreError::Database)?;
         }
-        connection
-            .execute_batch("CREATE INDEX IF NOT EXISTS activities_occurred_at_idx ON activities(occurred_at_ms DESC,id DESC); DROP TABLE IF EXISTS policy_rules; INSERT OR IGNORE INTO schema_migrations VALUES(2); INSERT OR IGNORE INTO schema_migrations VALUES(3);")
+        transaction
+            .execute_batch("CREATE INDEX IF NOT EXISTS activities_occurred_at_idx ON activities(occurred_at_ms DESC,id DESC); CREATE TABLE IF NOT EXISTS usage_records(id TEXT PRIMARY KEY,occurred_at_ms INTEGER NOT NULL,profile_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,model TEXT NOT NULL,input_tokens INTEGER NOT NULL,output_tokens INTEGER NOT NULL,total_tokens INTEGER NOT NULL,cached_tokens INTEGER NOT NULL,reported INTEGER NOT NULL DEFAULT 1); CREATE INDEX IF NOT EXISTS usage_records_time_idx ON usage_records(occurred_at_ms DESC,id DESC); DROP TABLE IF EXISTS policy_rules; INSERT OR IGNORE INTO schema_migrations VALUES(2); INSERT OR IGNORE INTO schema_migrations VALUES(3); INSERT OR IGNORE INTO schema_migrations VALUES(4);")
             .map_err(|_| StoreError::Database)?;
+        let has_reported = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('usage_records') WHERE name='reported')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|_| StoreError::Database)?;
+        if !has_reported {
+            transaction
+                .execute_batch("ALTER TABLE usage_records ADD COLUMN reported INTEGER NOT NULL DEFAULT 1; INSERT OR IGNORE INTO schema_migrations VALUES(5);")
+                .map_err(|_| StoreError::Database)?;
+        } else {
+            transaction
+                .execute("INSERT OR IGNORE INTO schema_migrations VALUES(5)", [])
+                .map_err(|_| StoreError::Database)?;
+        }
+        transaction.commit().map_err(|_| StoreError::Database)?;
         Ok(Self { connection })
     }
     pub fn save_profile(&self, input: &ProfileInput) -> Result<(), StoreError> {
@@ -256,6 +304,47 @@ impl Repository {
             .map_err(|_| StoreError::Database)
     }
 
+    pub fn record_usage(&self, usage: &UsageRecord) -> Result<(), StoreError> {
+        self.connection.execute(
+            "INSERT INTO usage_records(id,occurred_at_ms,profile_id,model,input_tokens,output_tokens,total_tokens,cached_tokens,reported) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9) ON CONFLICT(id) DO UPDATE SET input_tokens=CASE WHEN excluded.reported=1 THEN excluded.input_tokens ELSE usage_records.input_tokens END,output_tokens=CASE WHEN excluded.reported=1 THEN excluded.output_tokens ELSE usage_records.output_tokens END,total_tokens=CASE WHEN excluded.reported=1 THEN excluded.total_tokens ELSE usage_records.total_tokens END,cached_tokens=CASE WHEN excluded.reported=1 THEN excluded.cached_tokens ELSE usage_records.cached_tokens END,reported=MAX(usage_records.reported,excluded.reported)",
+            params![
+                usage.id.to_string(),
+                usage.occurred_at_ms,
+                usage.profile_id.to_string(),
+                usage.model,
+                usage.input_tokens,
+                usage.output_tokens,
+                usage.total_tokens,
+                usage.cached_tokens,
+                usage.reported,
+            ],
+        ).map_err(|_| StoreError::Database)?;
+        Ok(())
+    }
+
+    pub fn usage_totals(&self, since_ms: i64) -> Result<Vec<UsageTotal>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT profile_id,COUNT(*),COALESCE(SUM(reported),0),COALESCE(SUM(input_tokens),0),COALESCE(SUM(output_tokens),0),COALESCE(SUM(total_tokens),0),COALESCE(SUM(cached_tokens),0) FROM usage_records WHERE occurred_at_ms>=?1 GROUP BY profile_id ORDER BY profile_id",
+        ).map_err(|_| StoreError::Database)?;
+        let rows = statement
+            .query_map([since_ms], |row| {
+                let profile_id: String = row.get(0)?;
+                Ok(UsageTotal {
+                    profile_id: Uuid::parse_str(&profile_id)
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
+                    request_count: row.get(1)?,
+                    metered_request_count: row.get(2)?,
+                    input_tokens: row.get(3)?,
+                    output_tokens: row.get(4)?,
+                    total_tokens: row.get(5)?,
+                    cached_tokens: row.get(6)?,
+                })
+            })
+            .map_err(|_| StoreError::Database)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|_| StoreError::Database)
+    }
+
     pub fn activity_ids(&self) -> Result<Vec<Uuid>, StoreError> {
         let mut statement = self
             .connection
@@ -276,6 +365,12 @@ impl Repository {
         self.connection
             .execute(
                 "DELETE FROM activities WHERE occurred_at_ms < ?1",
+                [now_ms.saturating_sub(RETENTION_MS)],
+            )
+            .map_err(|_| StoreError::Database)?;
+        self.connection
+            .execute(
+                "DELETE FROM usage_records WHERE occurred_at_ms < ?1",
                 [now_ms.saturating_sub(RETENTION_MS)],
             )
             .map_err(|_| StoreError::Database)?;
@@ -372,5 +467,90 @@ pub fn validate_upstream_url(value: &str) -> Result<Url, StoreError> {
             Ok(url)
         }
         _ => Err(StoreError::InvalidUpstreamUrl),
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::*;
+
+    #[test]
+    fn aggregates_usage_by_profile_and_time_window() {
+        let repository = match Repository::open_in_memory() {
+            Ok(repository) => repository,
+            Err(error) => panic!("open repository: {error}"),
+        };
+        let profile_id = Uuid::new_v4();
+        let saved = repository.save_profile(&ProfileInput {
+            id: profile_id,
+            name: "fixture".to_owned(),
+            protocol: Protocol::OpenAi,
+            upstream_url: "https://api.example.test/v1".to_owned(),
+            upstream_secret_ref: "upstream".to_owned(),
+            local_secret_ref: "local".to_owned(),
+            local_key_digest: [0; 32],
+            policy: "strict".to_owned(),
+        });
+        assert!(saved.is_ok());
+        for (occurred_at_ms, input, output, cached, reported) in
+            [(1_000, 10, 4, 2, true), (2_000, 0, 0, 0, false)]
+        {
+            let recorded = repository.record_usage(&UsageRecord {
+                id: Uuid::new_v4(),
+                occurred_at_ms,
+                profile_id,
+                model: "fixture-model".to_owned(),
+                reported,
+                input_tokens: input,
+                output_tokens: output,
+                total_tokens: input + output,
+                cached_tokens: cached,
+            });
+            assert!(recorded.is_ok());
+        }
+
+        let metered_id = Uuid::new_v4();
+        assert!(
+            repository
+                .record_usage(&UsageRecord {
+                    id: metered_id,
+                    occurred_at_ms: 3_000,
+                    profile_id,
+                    model: "fixture-model".to_owned(),
+                    reported: false,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    total_tokens: 0,
+                    cached_tokens: 0,
+                })
+                .is_ok()
+        );
+        assert!(
+            repository
+                .record_usage(&UsageRecord {
+                    id: metered_id,
+                    occurred_at_ms: 3_000,
+                    profile_id,
+                    model: "fixture-model".to_owned(),
+                    reported: true,
+                    input_tokens: 20,
+                    output_tokens: 6,
+                    total_tokens: 26,
+                    cached_tokens: 3,
+                })
+                .is_ok()
+        );
+
+        let totals = match repository.usage_totals(1_500) {
+            Ok(totals) => totals,
+            Err(error) => panic!("query totals: {error}"),
+        };
+        assert_eq!(totals.len(), 1);
+        assert_eq!(totals[0].request_count, 2);
+        assert_eq!(totals[0].metered_request_count, 1);
+        assert_eq!(totals[0].input_tokens, 20);
+        assert_eq!(totals[0].output_tokens, 6);
+        assert_eq!(totals[0].total_tokens, 26);
+        assert_eq!(totals[0].cached_tokens, 3);
     }
 }

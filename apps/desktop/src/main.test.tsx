@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { App } from "./App";
@@ -58,10 +58,19 @@ function emptyApi(
     startGateway: vi.fn().mockResolvedValue({ running: true }),
     stopGateway: vi.fn().mockResolvedValue({ running: false }),
     listProfiles: vi.fn().mockResolvedValue(profiles),
+    listStartupIssues: vi.fn().mockResolvedValue([]),
+    removeUnavailableProfile: vi.fn(),
+    getProfileForEdit: vi.fn(),
     createProfile: vi.fn(),
+    updateProfile: vi.fn(),
     rotateLocalKey: vi.fn(),
     deleteProfile: vi.fn(),
     queryActivity: vi.fn().mockResolvedValue(emptyActivity),
+    scanEnvironmentProfiles: vi.fn().mockResolvedValue([]),
+    clearEnvironmentDiscoveries: vi.fn().mockResolvedValue(undefined),
+    queryUsage: vi.fn().mockResolvedValue({ profiles: [], retention_hours: 168 }),
+    queryBalance: vi.fn().mockResolvedValue({ supported: false }),
+    testProfileConnection: vi.fn(),
   };
 }
 
@@ -73,10 +82,44 @@ describe("desktop single-page shell", () => {
     expect(screen.getByText("Copy local settings")).toBeTruthy();
     expect(screen.getAllByText("Start protection")).toHaveLength(2);
     expect(screen.getAllByRole("form")).toHaveLength(1);
+    expect(
+      screen.getByRole("textbox", { name: "Connection name" }).hasAttribute("autofocus"),
+    ).toBe(false);
     expect(screen.queryByText("Dashboard")).toBeNull();
     expect(screen.queryByText("Policies")).toBeNull();
     expect(screen.queryByText("Test Console")).toBeNull();
     expect(screen.queryByText("Activity")).toBeNull();
+  });
+
+  it("surfaces and explicitly removes an unavailable saved connection", async () => {
+    const user = userEvent.setup();
+    const api = emptyApi();
+    vi.mocked(api.listStartupIssues).mockResolvedValue([
+      {
+        profile_id: "broken-profile",
+        profile_name: "Old DeepSeek",
+        reason: "missing_credentials",
+      },
+    ]);
+    vi.mocked(api.removeUnavailableProfile).mockResolvedValue(undefined);
+    render(<App api={api} initialLanguage="en-US" />);
+
+    expect(await screen.findByText("A saved connection needs attention")).toBeTruthy();
+    expect(screen.getByText("Old DeepSeek")).toBeTruthy();
+    expect(
+      screen.getByText("One or more credentials are missing from the operating system vault."),
+    ).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "Remove unavailable connection" }));
+    const dialog = screen.getByRole("dialog", { name: "Remove Old DeepSeek?" });
+    await user.click(
+      within(dialog).getByRole("button", { name: "Remove unavailable connection" }),
+    );
+
+    await waitFor(() =>
+      expect(api.removeUnavailableProfile).toHaveBeenCalledWith("broken-profile"),
+    );
+    expect(screen.queryByText("A saved connection needs attention")).toBeNull();
   });
 
   it("switches all visible workflow copy from Chinese to English", async () => {
@@ -102,6 +145,8 @@ describe("desktop single-page shell", () => {
 
     const url = await screen.findByRole("textbox", { name: "Upstream Base URL" });
     expect((url as HTMLInputElement).value).toBe("https://api.openai.com/v1");
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "Provider" }), "custom");
 
     await user.click(screen.getByRole("radio", { name: "Anthropic Messages" }));
     expect((url as HTMLInputElement).value).toBe("https://api.anthropic.com");
@@ -148,6 +193,7 @@ describe("desktop single-page shell", () => {
         protocol: "openai",
         upstreamUrl: "https://api.deepseek.com",
         upstreamKey: "test-upstream-key",
+        discoveryId: undefined,
         policy: "strict",
         customTerms: [],
       }),
@@ -185,6 +231,101 @@ describe("desktop single-page shell", () => {
     );
   });
 
+  it("discovers a saved environment configuration and imports it without exposing the key", async () => {
+    const user = userEvent.setup();
+    const api = emptyApi();
+    vi.mocked(api.scanEnvironmentProfiles).mockResolvedValue([
+      {
+        id: "discovery-1",
+        provider: "deepseek",
+        name: "DeepSeek",
+        protocol: "openai",
+        upstream_url: "https://api.deepseek.com",
+        key_preview: "sk-••••••7890",
+        source: "user",
+        key_variable: "DEEPSEEK_API_KEY",
+      },
+    ]);
+    vi.mocked(api.createProfile).mockResolvedValue({
+      profile,
+      local_base_url: "http://127.0.0.1:17891/v1",
+      local_key: "lpg_local_once",
+    });
+    render(<App api={api} initialLanguage="en-US" />);
+
+    await waitFor(() => expect(api.scanEnvironmentProfiles).toHaveBeenCalledTimes(1));
+    await user.click(await screen.findByRole("button", { name: /DeepSeek/ }));
+    expect(screen.queryByText(/123456/)).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Create connection" }));
+
+    await waitFor(() =>
+      expect(api.createProfile).toHaveBeenCalledWith(
+        expect.objectContaining({
+          discoveryId: "discovery-1",
+          upstreamKey: "",
+          upstreamUrl: "https://api.deepseek.com",
+        }),
+      ),
+    );
+  });
+
+  it("clears temporary environment discoveries when the add form is cancelled", async () => {
+    const user = userEvent.setup();
+    const api = emptyApi([profile]);
+    vi.mocked(api.scanEnvironmentProfiles).mockResolvedValue([
+      {
+        id: "discovery-1",
+        provider: "deepseek",
+        name: "DeepSeek",
+        protocol: "openai",
+        upstream_url: "https://api.deepseek.com",
+        key_preview: "sk-••••••7890",
+        source: "user",
+        key_variable: "DEEPSEEK_API_KEY",
+      },
+    ]);
+    render(<App api={api} initialLanguage="en-US" />);
+
+    await user.click(await screen.findByRole("button", { name: "Add connection" }));
+    const form = await screen.findByRole("form", { name: "Model connection" });
+    expect(await within(form).findByRole("button", { name: /User environment/ })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    await waitFor(() => expect(api.clearEnvironmentDiscoveries).toHaveBeenCalledOnce());
+    expect(screen.queryByRole("form", { name: "Model connection" })).toBeNull();
+  });
+
+  it("shows provider-reported token totals and queries a verified balance endpoint", async () => {
+    const user = userEvent.setup();
+    const api = emptyApi([profile]);
+    vi.mocked(api.queryUsage).mockResolvedValue({
+      profiles: [
+        {
+          profile_id: profile.id,
+          request_count: 3,
+          metered_request_count: 2,
+          input_tokens: 1_200,
+          output_tokens: 34,
+          total_tokens: 1_234,
+          cached_tokens: 500,
+        },
+      ],
+      retention_hours: 168,
+    });
+    vi.mocked(api.queryBalance).mockResolvedValue({
+      supported: true,
+      provider: "DeepSeek",
+      remaining: 42.5,
+      unit: "CNY",
+    });
+    render(<App api={api} initialLanguage="en-US" />);
+
+    expect(await screen.findByText("1,234")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Check quota / balance" }));
+    expect(await screen.findByText("Remaining: 42.5 CNY")).toBeTruthy();
+    expect(api.queryBalance).toHaveBeenCalledWith(profile.id);
+  });
+
   it("shows a persistent connection card without revealing either key", async () => {
     const user = userEvent.setup();
     const api = emptyApi([profile]);
@@ -201,17 +342,67 @@ describe("desktop single-page shell", () => {
     expect(await navigator.clipboard.readText()).toBe("http://127.0.0.1:17891/v1");
   });
 
+  it("reports a clipboard failure instead of claiming the Base URL was copied", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(navigator.clipboard, "writeText").mockRejectedValueOnce(new Error("denied"));
+    render(<App api={emptyApi([profile])} initialLanguage="en-US" />);
+
+    await user.click(await screen.findByRole("button", { name: "Copy local Base URL" }));
+
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "Could not copy. Select the value and copy it manually.",
+    );
+    expect(screen.queryByRole("button", { name: "Copied" })).toBeNull();
+  });
+
+  it("shows how many custom sensitive terms are configured without exposing them on the card", async () => {
+    const api = emptyApi([{ ...profile, custom_term_count: 2 }]);
+    render(<App api={api} initialLanguage="en-US" />);
+
+    expect(await screen.findByText("Custom sensitive terms: 2")).toBeTruthy();
+    expect(screen.queryByText("Project Aurora")).toBeNull();
+  });
+
+  it("tests an upstream connection and reports authenticated latency", async () => {
+    const user = userEvent.setup();
+    const api = emptyApi([profile]);
+    vi.mocked(api.testProfileConnection).mockResolvedValue({
+      success: true,
+      status: 200,
+      latency_ms: 87,
+    });
+    render(<App api={api} initialLanguage="en-US" />);
+
+    await user.click(await screen.findByRole("button", { name: "Test connection" }));
+
+    expect(await screen.findByText("Connected · 87 ms")).toBeTruthy();
+    expect(api.testProfileConnection).toHaveBeenCalledWith(profile.id);
+  });
+
   it("uses an accessible dismissible overflow menu with only low-frequency actions", async () => {
     const user = userEvent.setup();
     render(<App api={emptyApi([profile])} initialLanguage="en-US" />);
     const trigger = await screen.findByRole("button", { name: "More actions for DeepSeek" });
 
     await user.click(trigger);
+    const edit = screen.getByRole("menuitem", { name: "Edit connection" });
+    expect(edit).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "Rotate local key" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "Delete connection" })).toBeTruthy();
-    expect(screen.getAllByRole("menuitem")).toHaveLength(2);
-    expect(document.querySelector("select")).toBeNull();
+    expect(screen.getAllByRole("menuitem")).toHaveLength(3);
+    expect(screen.queryByRole("combobox", { name: "Provider" })).toBeNull();
     expect(screen.queryByRole("navigation")).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(edit));
+    await user.keyboard("{ArrowDown}");
+    expect(document.activeElement).toBe(
+      screen.getByRole("menuitem", { name: "Rotate local key" }),
+    );
+    await user.keyboard("{End}");
+    expect(document.activeElement).toBe(
+      screen.getByRole("menuitem", { name: "Delete connection" }),
+    );
+    await user.keyboard("{Home}");
+    expect(document.activeElement).toBe(edit);
 
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("menu")).toBeNull();
@@ -220,6 +411,78 @@ describe("desktop single-page shell", () => {
     await user.click(trigger);
     await user.click(document.body);
     expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("edits a connection without requiring or rotating its saved keys", async () => {
+    const user = userEvent.setup();
+    const api = emptyApi([profile]);
+    vi.mocked(api.getProfileForEdit).mockResolvedValue({
+      ...profile,
+      provider: "deepseek",
+      custom_terms: ["Project Aurora"],
+    });
+    vi.mocked(api.updateProfile).mockResolvedValue({
+      ...profile,
+      name: "DeepSeek production",
+      policy: "balanced",
+      custom_term_count: 1,
+    });
+    render(<App api={api} initialLanguage="en-US" />);
+
+    await user.click(await screen.findByRole("button", { name: "More actions for DeepSeek" }));
+    await user.click(screen.getByRole("menuitem", { name: "Edit connection" }));
+
+    expect(
+      await screen.findByRole("textbox", { name: "Connection name" }),
+    ).toHaveProperty("value", "DeepSeek");
+    expect(screen.getByDisplayValue("https://api.deepseek.com")).toBeTruthy();
+    expect(screen.getByDisplayValue("Project Aurora")).toBeTruthy();
+    expect(screen.getByLabelText("Upstream API key").hasAttribute("required")).toBe(false);
+
+    const name = screen.getByRole("textbox", { name: "Connection name" });
+    await user.clear(name);
+    await user.type(name, "DeepSeek production");
+    await user.click(screen.getByText("Advanced privacy settings"));
+    await user.click(screen.getByRole("radio", { name: /Balanced/ }));
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() =>
+      expect(api.updateProfile).toHaveBeenCalledWith(profile.id, {
+        name: "DeepSeek production",
+        protocol: "openai",
+        upstreamUrl: "https://api.deepseek.com",
+        upstreamKey: "",
+        discoveryId: undefined,
+        policy: "balanced",
+        customTerms: ["Project Aurora"],
+      }),
+    );
+    expect(await screen.findByRole("heading", { name: "DeepSeek production" })).toBeTruthy();
+    expect(api.rotateLocalKey).not.toHaveBeenCalled();
+  });
+
+  it("requires a replacement key before an edited connection can target another origin", async () => {
+    const user = userEvent.setup();
+    const api = emptyApi([profile]);
+    vi.mocked(api.getProfileForEdit).mockResolvedValue({
+      ...profile,
+      provider: "deepseek",
+      custom_terms: [],
+    });
+    render(<App api={api} initialLanguage="en-US" />);
+
+    await user.click(await screen.findByRole("button", { name: "More actions for DeepSeek" }));
+    await user.click(screen.getByRole("menuitem", { name: "Edit connection" }));
+    const url = await screen.findByRole("textbox", { name: "Upstream Base URL" });
+    await user.clear(url);
+    await user.type(url, "https://other.example.test/v1");
+
+    expect(screen.getByLabelText("Upstream API key").hasAttribute("required")).toBe(true);
+    expect(
+      screen.getByText(
+        "The upstream origin changed. Enter a new key so the saved key is never sent to another server.",
+      ),
+    ).toBeTruthy();
   });
 
   it("rotates a local key and exposes the replacement only once", async () => {
@@ -252,7 +515,7 @@ describe("desktop single-page shell", () => {
     await user.click(screen.getByRole("button", { name: "Delete connection" }));
 
     await waitFor(() => expect(api.deleteProfile).toHaveBeenCalledWith(profile.id));
-    expect(screen.queryByText("DeepSeek")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "DeepSeek" })).toBeNull();
   });
 
   it("requires protection to stop before a destructive action", async () => {
@@ -293,7 +556,13 @@ describe("desktop single-page shell", () => {
     expect(screen.getByRole("button", { name: "Add connection" })).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "More actions for DeepSeek" }));
     await user.click(screen.getByRole("menuitem", { name: "Delete connection" }));
-    expect(screen.getByRole("dialog").getAttribute("aria-modal")).toBe("true");
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.getAttribute("aria-modal")).toBe("true");
+    expect(document.activeElement).toBe(
+      within(dialog).getByRole("button", { name: "Cancel" }),
+    );
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("renders an unknown runtime error as text rather than markup", async () => {

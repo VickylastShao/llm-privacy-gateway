@@ -11,7 +11,10 @@ use secrecy::SecretString;
 use session_map::{MappingBackend, MemoryBackend, PseudonymMap};
 use uuid::Uuid;
 
-use crate::{ActivitySink, AuthProfile, GatewayProtocol, NoopActivitySink, local_key_digest};
+use crate::{
+    ActivitySink, AuthProfile, GatewayProtocol, NoopActivitySink, NoopUsageSink, UsageSink,
+    local_key_digest,
+};
 
 pub struct RuntimeProfile {
     pub id: Uuid,
@@ -117,17 +120,30 @@ pub struct GatewayState {
     pub client: reqwest::Client,
     pub profiles: HashMap<Uuid, Arc<RuntimeProfile>>,
     pub activity_sink: Arc<dyn ActivitySink>,
+    pub usage_sink: Arc<dyn UsageSink>,
 }
 impl GatewayState {
     pub fn new(
         profiles: impl IntoIterator<Item = RuntimeProfile>,
     ) -> Result<Arc<Self>, reqwest::Error> {
-        Self::new_with_sink(profiles, Arc::new(NoopActivitySink))
+        Self::new_with_sinks(
+            profiles,
+            Arc::new(NoopActivitySink),
+            Arc::new(NoopUsageSink),
+        )
     }
 
     pub fn new_with_sink(
         profiles: impl IntoIterator<Item = RuntimeProfile>,
         activity_sink: Arc<dyn ActivitySink>,
+    ) -> Result<Arc<Self>, reqwest::Error> {
+        Self::new_with_sinks(profiles, activity_sink, Arc::new(NoopUsageSink))
+    }
+
+    pub fn new_with_sinks(
+        profiles: impl IntoIterator<Item = RuntimeProfile>,
+        activity_sink: Arc<dyn ActivitySink>,
+        usage_sink: Arc<dyn UsageSink>,
     ) -> Result<Arc<Self>, reqwest::Error> {
         let profiles = profiles
             .into_iter()
@@ -137,6 +153,7 @@ impl GatewayState {
             client: crate::upstream_client()?,
             profiles,
             activity_sink,
+            usage_sink,
         }))
     }
     pub fn auth_profiles(&self) -> Vec<AuthProfile> {

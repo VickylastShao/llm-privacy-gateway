@@ -2,13 +2,29 @@
   "name": "llm-privacy-gateway",
   "private": true,
   "version": "0.1.0",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/VickylastShao/llm-privacy-gateway.git"
+  },
+  "homepage": "https://github.com/VickylastShao/llm-privacy-gateway#readme",
+  "bugs": {
+    "url": "https://github.com/VickylastShao/llm-privacy-gateway/issues"
+  },
   "type": "module",
+  "engines": {
+    "node": ">=24 <25"
+  },
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
-    "test": "vitest run && npm run test:sdk",
+    "test": "vitest run && npm run test:sdk && npm run test:release",
     "test:sdk": "node --test tests/compatibility/node/*.test.mjs",
+    "test:release": "node --test tests/release/*.test.mjs",
     "lint": "tsc --noEmit",
+    "check:versions": "node scripts/check-versions.mjs",
+    "check:release": "node scripts/check-release-readiness.mjs",
+    "smoke:provider": "node scripts/real-provider-smoke.mjs",
     "desktop:dev": "tauri dev",
     "desktop:build": "tauri build"
   },

@@ -11,8 +11,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use activity_store::{Activity, Repository, StoreError};
-use gateway::{ActivityEvent, ActivitySink};
+use activity_store::{Activity, Repository, StoreError, UsageRecord};
+use gateway::{ActivityEvent, ActivitySink, UsageEvent, UsageSink};
 use serde::Serialize;
 
 const RETENTION_HOURS: u64 = 168;
@@ -48,6 +48,23 @@ pub struct ActivityQuery {
     pub total_activity_count: u64,
     pub session_preview_count: u64,
     pub persist_dropped_count: u64,
+    pub retention_hours: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UsageView {
+    pub profile_id: String,
+    pub request_count: u64,
+    pub metered_request_count: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+    pub cached_tokens: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UsageQuery {
+    pub profiles: Vec<UsageView>,
     pub retention_hours: u64,
 }
 
@@ -144,6 +161,28 @@ impl ActivityService {
             .map_err(|_| StoreError::Database)?
             .activity_count()
     }
+
+    pub fn query_usage(&self, now_ms: i64) -> Result<UsageQuery, StoreError> {
+        let repository = self.repository.lock().map_err(|_| StoreError::Database)?;
+        repository.prune_activities(now_ms)?;
+        let profiles = repository
+            .usage_totals(now_ms.saturating_sub(RETENTION_MS))?
+            .into_iter()
+            .map(|usage| UsageView {
+                profile_id: usage.profile_id.to_string(),
+                request_count: usage.request_count,
+                metered_request_count: usage.metered_request_count,
+                input_tokens: usage.input_tokens,
+                output_tokens: usage.output_tokens,
+                total_tokens: usage.total_tokens,
+                cached_tokens: usage.cached_tokens,
+            })
+            .collect();
+        Ok(UsageQuery {
+            profiles,
+            retention_hours: RETENTION_HOURS,
+        })
+    }
 }
 
 impl ActivitySink for ActivityService {
@@ -167,6 +206,30 @@ impl ActivitySink for ActivityService {
                 false
             }
         }
+    }
+}
+
+impl UsageSink for ActivityService {
+    fn publish_usage(&self, event: UsageEvent) -> bool {
+        self.repository
+            .lock()
+            .ok()
+            .and_then(|repository| {
+                repository
+                    .record_usage(&UsageRecord {
+                        id: event.id,
+                        occurred_at_ms: event.occurred_at_ms,
+                        profile_id: event.profile_id,
+                        model: event.model,
+                        reported: event.reported,
+                        input_tokens: event.usage.input_tokens,
+                        output_tokens: event.usage.output_tokens,
+                        total_tokens: event.usage.total_tokens,
+                        cached_tokens: event.usage.cached_tokens,
+                    })
+                    .ok()
+            })
+            .is_some()
     }
 }
 
