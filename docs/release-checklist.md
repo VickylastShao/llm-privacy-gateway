@@ -26,7 +26,7 @@
 - Confirm persistence failures produce a visible activity warning without changing gateway responses.
 - Inspect the SQLite database and confirm request bodies, response bodies, original matches, and preview values are absent.
 - Publish exact SDK versions and supported route limitations.
-- Run `scripts/real-provider-smoke.mjs` once for a production OpenAI-compatible provider and once for native Anthropic with non-production keys; record protocol, model, date, and pass/fail output without recording credentials.
+- Confirm the protected `release` environment contains the two non-production smoke-test secrets and four provider/model variables documented in `docs/compatibility.md`; the release workflow must pass both real-provider checks before certificate import.
 - Confirm `CHANGELOG.md` has the release date and final repository release links.
 - Confirm `PRIVACY.md` matches the shipped storage, retention, environment discovery, and network behavior.
 - Confirm copy failures produce visible feedback, overflow-menu actions support keyboard navigation, and confirmation dialogs enter the native modal layer with a safe initial focus.

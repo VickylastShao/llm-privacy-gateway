@@ -51,6 +51,22 @@ jobs:
       - run: cargo install cargo-deny --version 0.20.2 --locked
       - run: cargo deny check
       - run: cargo deny --manifest-path apps/desktop/src-tauri/Cargo.toml --target x86_64-pc-windows-msvc check advisories licenses sources
+      - name: Verify real OpenAI-compatible provider
+        env:
+          LPG_REAL_PROTOCOL: openai
+          LPG_REAL_UPSTREAM_BASE_URL: ${{ vars.OPENAI_COMPAT_SMOKE_BASE_URL }}
+          LPG_REAL_UPSTREAM_API_KEY: ${{ secrets.OPENAI_COMPAT_SMOKE_API_KEY }}
+          LPG_REAL_MODEL: ${{ vars.OPENAI_COMPAT_SMOKE_MODEL }}
+          LPG_REAL_PORT: 17893
+        run: npm run smoke:provider
+      - name: Verify real Anthropic provider
+        env:
+          LPG_REAL_PROTOCOL: anthropic
+          LPG_REAL_UPSTREAM_BASE_URL: ${{ vars.ANTHROPIC_SMOKE_BASE_URL }}
+          LPG_REAL_UPSTREAM_API_KEY: ${{ secrets.ANTHROPIC_SMOKE_API_KEY }}
+          LPG_REAL_MODEL: ${{ vars.ANTHROPIC_SMOKE_MODEL }}
+          LPG_REAL_PORT: 17894
+        run: npm run smoke:provider
       - name: Import Authenticode certificate
         id: signing
         shell: pwsh

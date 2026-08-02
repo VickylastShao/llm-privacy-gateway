@@ -25,3 +25,17 @@ The script starts the development gateway on loopback, sends a generated synthet
 through non-streaming and SSE requests, verifies local restoration, and prints no key or prompt
 content. It is evidence of the selected model and route only; it does not generalize to every model
 or provider feature.
+
+The tag-triggered release workflow runs this check twice before importing the signing certificate.
+Configure these values in the protected GitHub `release` environment:
+
+| Kind | Name | Purpose |
+| --- | --- | --- |
+| Secret | `OPENAI_COMPAT_SMOKE_API_KEY` | Non-production key for the selected OpenAI-compatible provider |
+| Variable | `OPENAI_COMPAT_SMOKE_BASE_URL` | Provider API base URL |
+| Variable | `OPENAI_COMPAT_SMOKE_MODEL` | Model supported by that key |
+| Secret | `ANTHROPIC_SMOKE_API_KEY` | Non-production native Anthropic key |
+| Variable | `ANTHROPIC_SMOKE_BASE_URL` | Native Anthropic API base URL |
+| Variable | `ANTHROPIC_SMOKE_MODEL` | Native Anthropic model supported by that key |
+
+Missing values fail the release before certificate import or artifact construction.
