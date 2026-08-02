@@ -16,6 +16,7 @@ Last reviewed: 2026-08-02
 | OpenAI and Anthropic Python SDK mock compatibility | Pass |
 | Rust dependency advisories, licenses, and sources | Pass with documented Tauri `rust-unic` unmaintained-advisory exceptions and non-blocking duplicate-dependency warnings |
 | npm high/critical vulnerability audit | Pass: zero vulnerabilities |
+| GitHub Dependabot alerts | Reviewed for the Windows-only release: `GHSA-wrw7-89jp-8q8g` affects the Linux/GTK-only `glib 0.18.5` dependency, which is absent from the `x86_64-pc-windows-msvc` graph; dismissed as not used and must be reopened before Linux support |
 | Deterministic privacy evaluation corpus | Pass for the current synthetic corpus |
 | Repository secret-pattern scan | Pass after classifying documented synthetic canaries |
 | Automated full-history secret scan | Pass in GitHub CI with pinned Gitleaks Action 3.0.0; only the two documented synthetic detector-fixture paths are allowlisted for the JWT and private-key rules |
