@@ -1,9 +1,12 @@
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+};
 
 use rusqlite::{Connection, OptionalExtension, params};
-use session_map::EncryptedRecord;
+use session_map::{EncryptedRecord, MapError, MappingBackend};
 use thiserror::Error;
 use url::Url;
 use uuid::Uuid;
@@ -78,6 +81,56 @@ pub struct Repository {
     connection: Connection,
 }
 
+#[derive(Clone)]
+pub struct RepositoryMappingBackend {
+    repository: Arc<Mutex<Repository>>,
+    profile_id: Uuid,
+}
+
+impl RepositoryMappingBackend {
+    #[must_use]
+    pub const fn new(repository: Arc<Mutex<Repository>>, profile_id: Uuid) -> Self {
+        Self {
+            repository,
+            profile_id,
+        }
+    }
+}
+
+impl MappingBackend for RepositoryMappingBackend {
+    fn get(&self, token: &str) -> Result<Option<EncryptedRecord>, MapError> {
+        self.repository
+            .lock()
+            .map_err(|_| MapError::Backend)?
+            .mapping_record(self.profile_id, token)
+            .map_err(|_| MapError::Backend)
+    }
+
+    fn put(&mut self, record: EncryptedRecord) -> Result<(), MapError> {
+        self.repository
+            .lock()
+            .map_err(|_| MapError::Backend)?
+            .save_mapping_record(self.profile_id, &record)
+            .map_err(|_| MapError::Backend)
+    }
+
+    fn remove(&mut self, token: &str) -> Result<(), MapError> {
+        self.repository
+            .lock()
+            .map_err(|_| MapError::Backend)?
+            .delete_mapping_record(self.profile_id, token)
+            .map_err(|_| MapError::Backend)
+    }
+
+    fn clear(&mut self) -> Result<(), MapError> {
+        self.repository
+            .lock()
+            .map_err(|_| MapError::Backend)?
+            .clear_mapping_records(self.profile_id)
+            .map_err(|_| MapError::Backend)
+    }
+}
+
 impl Repository {
     pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self, StoreError> {
         let connection = Connection::open(path).map_err(|_| StoreError::Database)?;
@@ -90,7 +143,7 @@ impl Repository {
     }
 
     fn initialize(connection: Connection) -> Result<Self, StoreError> {
-        connection.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY); CREATE TABLE IF NOT EXISTS profiles(id TEXT PRIMARY KEY,name TEXT NOT NULL,protocol TEXT NOT NULL,upstream_url TEXT NOT NULL,upstream_secret_ref TEXT NOT NULL,local_secret_ref TEXT NOT NULL,local_key_digest BLOB NOT NULL,policy TEXT NOT NULL); CREATE TABLE IF NOT EXISTS policy_rules(profile_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,entity_kind TEXT NOT NULL,action TEXT NOT NULL,PRIMARY KEY(profile_id,entity_kind)); CREATE TABLE IF NOT EXISTS pseudonym_records(profile_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,token TEXT NOT NULL,kind TEXT NOT NULL,nonce BLOB NOT NULL,ciphertext BLOB NOT NULL,PRIMARY KEY(profile_id,token)); INSERT OR IGNORE INTO schema_migrations VALUES(1);").map_err(|_| StoreError::Database)?;
+        connection.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY); CREATE TABLE IF NOT EXISTS profiles(id TEXT PRIMARY KEY,name TEXT NOT NULL,protocol TEXT NOT NULL,upstream_url TEXT NOT NULL,upstream_secret_ref TEXT NOT NULL,local_secret_ref TEXT NOT NULL,local_key_digest BLOB NOT NULL,policy TEXT NOT NULL); CREATE TABLE IF NOT EXISTS pseudonym_records(profile_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,token TEXT NOT NULL,kind TEXT NOT NULL,nonce BLOB NOT NULL,ciphertext BLOB NOT NULL,PRIMARY KEY(profile_id,token)); INSERT OR IGNORE INTO schema_migrations VALUES(1);").map_err(|_| StoreError::Database)?;
         let has_timestamp = connection
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM pragma_table_info('activities') WHERE name='occurred_at_ms')",
@@ -104,7 +157,7 @@ impl Repository {
                 .map_err(|_| StoreError::Database)?;
         }
         connection
-            .execute_batch("CREATE INDEX IF NOT EXISTS activities_occurred_at_idx ON activities(occurred_at_ms DESC,id DESC); INSERT OR IGNORE INTO schema_migrations VALUES(2);")
+            .execute_batch("CREATE INDEX IF NOT EXISTS activities_occurred_at_idx ON activities(occurred_at_ms DESC,id DESC); DROP TABLE IF EXISTS policy_rules; INSERT OR IGNORE INTO schema_migrations VALUES(2); INSERT OR IGNORE INTO schema_migrations VALUES(3);")
             .map_err(|_| StoreError::Database)?;
         Ok(Self { connection })
     }
@@ -255,6 +308,49 @@ impl Repository {
             .map_err(|_| StoreError::Database)?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|_| StoreError::Database)
+    }
+
+    pub fn mapping_record(
+        &self,
+        profile_id: Uuid,
+        token: &str,
+    ) -> Result<Option<EncryptedRecord>, StoreError> {
+        self.connection
+            .query_row(
+                "SELECT token,kind,nonce,ciphertext FROM pseudonym_records WHERE profile_id=?1 AND token=?2",
+                params![profile_id.to_string(), token],
+                |row| {
+                    EncryptedRecord::from_encrypted_parts(
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                    )
+                    .map_err(|_| rusqlite::Error::InvalidQuery)
+                },
+            )
+            .optional()
+            .map_err(|_| StoreError::Database)
+    }
+
+    pub fn delete_mapping_record(&self, profile_id: Uuid, token: &str) -> Result<(), StoreError> {
+        self.connection
+            .execute(
+                "DELETE FROM pseudonym_records WHERE profile_id=?1 AND token=?2",
+                params![profile_id.to_string(), token],
+            )
+            .map_err(|_| StoreError::Database)?;
+        Ok(())
+    }
+
+    pub fn clear_mapping_records(&self, profile_id: Uuid) -> Result<(), StoreError> {
+        self.connection
+            .execute(
+                "DELETE FROM pseudonym_records WHERE profile_id=?1",
+                [profile_id.to_string()],
+            )
+            .map_err(|_| StoreError::Database)?;
+        Ok(())
     }
     pub fn debug_export(&self) -> Result<String, StoreError> {
         self.connection.query_row("SELECT group_concat(name || ':' || upstream_secret_ref || ':' || local_secret_ref) FROM profiles",[],|row|row.get::<_,Option<String>>(0)).map(|value|value.unwrap_or_default()).map_err(|_|StoreError::Database)

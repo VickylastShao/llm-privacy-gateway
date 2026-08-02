@@ -7,6 +7,7 @@ export type ProfileSummary = {
   protocol: Protocol;
   upstream_url: string;
   policy: Policy;
+  custom_term_count: number;
 };
 export type ProfileDraft = {
   name: string;
@@ -14,6 +15,7 @@ export type ProfileDraft = {
   upstreamUrl: string;
   upstreamKey: string;
   policy: Policy;
+  customTerms: string[];
 };
 export type CreatedProfile = {
   profile: ProfileSummary;

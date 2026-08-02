@@ -17,6 +17,10 @@ fn memory_store_and_account_names_follow_contract() {
         service_account(SecretKind::Mapping, id).1,
         format!("mapping/{id}")
     );
+    assert_eq!(
+        service_account(SecretKind::Dictionary, id).1,
+        format!("dictionary/{id}")
+    );
     let store = MemorySecretStore::default();
     store
         .put(

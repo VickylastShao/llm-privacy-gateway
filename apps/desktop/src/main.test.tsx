@@ -15,6 +15,7 @@ const profile: ProfileSummary = {
   protocol: "openai",
   upstream_url: "https://api.deepseek.com",
   policy: "strict",
+  custom_term_count: 0,
 };
 
 const emptyActivity: PrivacyActivityResponse = {
@@ -124,6 +125,7 @@ describe("desktop single-page shell", () => {
         protocol: "openai",
         upstream_url: "https://api.deepseek.com",
         policy: "strict",
+        custom_term_count: 0,
       },
       local_base_url: "http://127.0.0.1:17891/v1",
       local_key: "lpg_local_once",
@@ -147,11 +149,40 @@ describe("desktop single-page shell", () => {
         upstreamUrl: "https://api.deepseek.com",
         upstreamKey: "test-upstream-key",
         policy: "strict",
+        customTerms: [],
       }),
     );
     expect(await screen.findByText("lpg_local_once")).toBeTruthy();
     const result = screen.getByRole("region", { name: "Copy these local settings now" });
     expect(document.activeElement).toBe(result);
+  });
+
+  it("submits normalized per-connection custom sensitive terms", async () => {
+    const user = userEvent.setup();
+    const api = emptyApi();
+    vi.mocked(api.createProfile).mockResolvedValue({
+      profile: { ...profile, custom_term_count: 2 },
+      local_base_url: "http://127.0.0.1:17891/v1",
+      local_key: "lpg_local_once",
+    });
+    render(<App api={api} initialLanguage="en-US" />);
+
+    await user.type(await screen.findByRole("textbox", { name: "Connection name" }), "Private");
+    await user.type(screen.getByLabelText("Upstream API key"), "test-upstream-key");
+    await user.click(screen.getByText("Advanced privacy settings"));
+    await user.type(
+      screen.getByRole("textbox", { name: "Custom sensitive terms" }),
+      " Project Aurora {enter}Internal Client ",
+    );
+    await user.click(screen.getByRole("button", { name: "Create connection" }));
+
+    await waitFor(() =>
+      expect(api.createProfile).toHaveBeenCalledWith(
+        expect.objectContaining({
+          customTerms: ["Project Aurora", "Internal Client"],
+        }),
+      ),
+    );
   });
 
   it("shows a persistent connection card without revealing either key", async () => {

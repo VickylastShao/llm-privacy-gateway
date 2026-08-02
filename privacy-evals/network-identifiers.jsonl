@@ -5,3 +5,9 @@
 {"id":"network-host","text":"host api.service.internal","expected":[{"kind":"InternalHostname","start":5,"end":25}]}
 {"id":"network-coordinate","text":"coord 31.2304, 121.4737","expected":[{"kind":"Coordinate","start":6,"end":23}]}
 {"id":"network-negative","text":"www.example.com and coord 91.0, 181.0","expected":[]}
+{"id":"network-email-context","text":"contact:<qa.team+test@example.test>","expected":[{"kind":"Email","start":9,"end":34}]}
+{"id":"network-ipv4-context","text":"server=10.20.30.40;","expected":[{"kind":"Ipv4","start":7,"end":18}]}
+{"id":"network-ipv6-context","text":"[2001:db8:85a3::8a2e:370:7334]","expected":[{"kind":"Ipv6","start":1,"end":29}]}
+{"id":"network-mac-hyphen","text":"mac 00-1A-2B-3C-4D-5E","expected":[{"kind":"MacAddress","start":4,"end":21}]}
+{"id":"network-host-lan","text":"host db.cluster.lan","expected":[{"kind":"InternalHostname","start":5,"end":19}]}
+{"id":"network-coordinate-negative","text":"coord -31.2304, -121.4737","expected":[{"kind":"Coordinate","start":6,"end":25}]}

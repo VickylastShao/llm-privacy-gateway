@@ -9,6 +9,8 @@
 - Repeat a debug launch and confirm console diagnostics remain available to developers.
 - Send synthetic blocked and transformed requests and confirm their privacy activity appears without raw canary values.
 - Restart the desktop app and confirm seven-day activity metadata remains while session-only previews are gone.
+- Create a strict profile with a custom sensitive term and a mobile number, restart the app, then confirm both are pseudonymized and restored through non-streaming and SSE requests.
+- Restart between request and response-replay checks and confirm encrypted pseudonym mappings still restore without plaintext appearing in SQLite.
 - Confirm persistence failures produce a visible activity warning without changing gateway responses.
 - Inspect the SQLite database and confirm request bodies, response bodies, original matches, and preview values are absent.
 - Publish exact SDK versions and supported route limitations.

@@ -28,6 +28,7 @@ export function ConnectionForm({ t, onSubmit, onCancel }: Props) {
   const [upstreamUrl, setUpstreamUrl] = useState(defaultUpstreamUrl("openai"));
   const [urlIsDirty, setUrlIsDirty] = useState(false);
   const [policy, setPolicy] = useState<Policy>("strict");
+  const [customTerms, setCustomTerms] = useState("");
   const [pending, setPending] = useState(false);
 
   const chooseProtocol = (next: Protocol) => {
@@ -40,8 +41,19 @@ export function ConnectionForm({ t, onSubmit, onCancel }: Props) {
     const key = upstreamKey.current?.value ?? "";
     setPending(true);
     try {
-      await onSubmit({ name, protocol, upstreamUrl, upstreamKey: key, policy });
+      await onSubmit({
+        name,
+        protocol,
+        upstreamUrl,
+        upstreamKey: key,
+        policy,
+        customTerms: customTerms
+          .split(/\r?\n/)
+          .map((term) => term.trim())
+          .filter(Boolean),
+      });
       setName("");
+      setCustomTerms("");
     } finally {
       if (upstreamKey.current) upstreamKey.current.value = "";
       setPending(false);
@@ -143,6 +155,18 @@ export function ConnectionForm({ t, onSubmit, onCancel }: Props) {
             ))}
           </div>
         </fieldset>
+        <div className="field custom-terms-field">
+          <label htmlFor="custom-terms">{t("customTerms")}</label>
+          <textarea
+            aria-describedby="custom-terms-hint"
+            id="custom-terms"
+            onChange={(event) => setCustomTerms(event.target.value)}
+            placeholder={t("customTermsPlaceholder")}
+            rows={4}
+            value={customTerms}
+          />
+          <small id="custom-terms-hint">{t("customTermsHint")}</small>
+        </div>
       </details>
 
       <div className="form-actions">

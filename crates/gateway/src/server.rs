@@ -8,12 +8,12 @@ use axum::{
     Router,
     body::{Body, Bytes},
     extract::State,
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, HeaderName, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
 use futures_util::{StreamExt, stream};
-use privacy_core::RequestPrivacyReport;
+use privacy_core::{Policy, PrivacyEngine, RequestPrivacyReport};
 use secrecy::ExposeSecret;
 use tower::{ServiceBuilder, limit::ConcurrencyLimitLayer};
 use tower_http::{
@@ -24,6 +24,7 @@ use tower_http::{
 use crate::{GatewayConfig, GatewayError, GatewayProtocol, GatewayState, authenticate};
 
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
+const MAX_ACTIVITY_METADATA_CHARS: usize = 128;
 
 pub fn router() -> Router {
     apply_layers(Router::new().route("/healthz", get(|| async { StatusCode::NO_CONTENT })))
@@ -56,9 +57,7 @@ fn apply_layers(router: Router) -> Router {
 }
 
 pub async fn start(config: GatewayConfig) -> Result<(), GatewayError> {
-    let listener = tokio::net::TcpListener::bind(config.bind())
-        .await
-        .map_err(|_| GatewayError::Listener)?;
+    let listener = bind_listener(config).await?;
     axum::serve(listener, router())
         .await
         .map_err(|_| GatewayError::Listener)
@@ -67,9 +66,7 @@ pub async fn start_with_state(
     config: GatewayConfig,
     state: Arc<GatewayState>,
 ) -> Result<(), GatewayError> {
-    let listener = tokio::net::TcpListener::bind(config.bind())
-        .await
-        .map_err(|_| GatewayError::Listener)?;
+    let listener = bind_listener(config).await?;
     axum::serve(listener, gateway_router(state))
         .await
         .map_err(|_| GatewayError::Listener)
@@ -83,9 +80,24 @@ pub async fn start_with_shutdown<F>(
 where
     F: Future<Output = ()> + Send + 'static,
 {
-    let listener = tokio::net::TcpListener::bind(config.bind())
+    let listener = bind_listener(config).await?;
+    serve_with_listener_and_shutdown(listener, state, shutdown).await
+}
+
+pub async fn bind_listener(config: GatewayConfig) -> Result<tokio::net::TcpListener, GatewayError> {
+    tokio::net::TcpListener::bind(config.bind())
         .await
-        .map_err(|_| GatewayError::Listener)?;
+        .map_err(|_| GatewayError::Listener)
+}
+
+pub async fn serve_with_listener_and_shutdown<F>(
+    listener: tokio::net::TcpListener,
+    state: Arc<GatewayState>,
+    shutdown: F,
+) -> Result<(), GatewayError>
+where
+    F: Future<Output = ()> + Send + 'static,
+{
     axum::serve(listener, gateway_router(state))
         .with_graceful_shutdown(shutdown)
         .await
@@ -104,11 +116,11 @@ async fn openai_chat(
         "/chat/completions",
         headers,
         body,
-        |body, state, profile, report| {
+        |body, _state, profile, report| {
             let mut value = serde_json::from_slice(body).map_err(|_| ForwardError::InvalidJson)?;
             protocol_openai::transform_chat_request_with_report(
                 &mut value,
-                &state.engine,
+                &profile.engine,
                 &profile.policy,
                 &mut *profile.mappings.lock().map_err(|_| ForwardError::Blocked)?,
                 report,
@@ -131,11 +143,11 @@ async fn openai_responses(
         "/responses",
         headers,
         body,
-        |body, state, profile, report| {
+        |body, _state, profile, report| {
             let mut value = serde_json::from_slice(body).map_err(|_| ForwardError::InvalidJson)?;
             protocol_openai::transform_responses_request_with_report(
                 &mut value,
-                &state.engine,
+                &profile.engine,
                 &profile.policy,
                 &mut *profile.mappings.lock().map_err(|_| ForwardError::Blocked)?,
                 report,
@@ -158,11 +170,11 @@ async fn anthropic_messages(
         "/v1/messages",
         headers,
         body,
-        |body, state, profile, report| {
+        |body, _state, profile, report| {
             let input = std::str::from_utf8(body).map_err(|_| ForwardError::InvalidJson)?;
             let transformed = protocol_anthropic::transform_messages_request_raw_with_report(
                 input,
-                &state.engine,
+                &profile.engine,
                 &profile.policy,
                 &mut *profile.mappings.lock().map_err(|_| ForwardError::Blocked)?,
                 report,
@@ -188,11 +200,11 @@ async fn anthropic_count_tokens(
         "/v1/messages/count_tokens",
         headers,
         body,
-        |body, state, profile, report| {
+        |body, _state, profile, report| {
             let input = std::str::from_utf8(body).map_err(|_| ForwardError::InvalidJson)?;
             let transformed = protocol_anthropic::transform_messages_request_raw_with_report(
                 input,
-                &state.engine,
+                &profile.engine,
                 &profile.policy,
                 &mut *profile.mappings.lock().map_err(|_| ForwardError::Blocked)?,
                 report,
@@ -231,14 +243,10 @@ async fn models(State(state): State<Arc<GatewayState>>, headers: HeaderMap) -> R
         profile.upstream_base_url.trim_end_matches('/'),
         path
     );
+    let request = copy_safe_request_headers(state.client.get(url), &headers);
     let request = match protocol {
-        GatewayProtocol::OpenAi => state
-            .client
-            .get(url)
-            .bearer_auth(profile.upstream_key.expose_secret()),
-        GatewayProtocol::Anthropic => state
-            .client
-            .get(url)
+        GatewayProtocol::OpenAi => request.bearer_auth(profile.upstream_key.expose_secret()),
+        GatewayProtocol::Anthropic => request
             .header("x-api-key", profile.upstream_key.expose_secret())
             .header(
                 "anthropic-version",
@@ -251,14 +259,12 @@ async fn models(State(state): State<Arc<GatewayState>>, headers: HeaderMap) -> R
     match request.send().await {
         Ok(response) => {
             let status = response.status();
-            let content_type = response.headers().get("content-type").cloned();
+            let response_headers = safe_response_headers(response.headers());
             match response.bytes().await {
                 Ok(bytes) => {
                     let mut result = Response::new(Body::from(bytes));
                     *result.status_mut() = status;
-                    if let Some(content_type) = content_type {
-                        result.headers_mut().insert("content-type", content_type);
-                    }
+                    apply_response_headers(&mut result, &response_headers);
                     result
                 }
                 Err(_) => (StatusCode::BAD_GATEWAY, "upstream response failed").into_response(),
@@ -312,8 +318,8 @@ where
     };
     let started = Instant::now();
     let occurred_at_ms = now_ms();
-    let request_id = request_id(&headers);
-    let model = request_model(&body);
+    let request_id = request_id(&headers, &profile.engine);
+    let model = request_model(&body, &profile.engine);
     let mut report = RequestPrivacyReport::default();
     let outbound = match transform(&body, &state, profile, &mut report) {
         Ok(outbound) => outbound,
@@ -340,10 +346,13 @@ where
         profile.upstream_base_url.trim_end_matches('/'),
         path
     );
-    let request = state
-        .client
-        .post(url)
-        .header("content-type", "application/json");
+    let request = copy_safe_request_headers(
+        state
+            .client
+            .post(url)
+            .header("content-type", "application/json"),
+        &headers,
+    );
     let mut request = match outbound {
         OutboundBody::Json(value) => request.json(&value),
         OutboundBody::Raw(body) => request.body(body),
@@ -378,9 +387,9 @@ where
                 report,
                 occurred_at_ms,
             );
-            let content_type = response.headers().get("content-type").cloned();
-            let is_sse = content_type
-                .as_ref()
+            let response_headers = safe_response_headers(response.headers());
+            let is_sse = response_headers
+                .get("content-type")
                 .and_then(|value| value.to_str().ok())
                 .is_some_and(|value| value.starts_with("text/event-stream"));
             if is_sse && protocol == GatewayProtocol::OpenAi {
@@ -416,9 +425,7 @@ where
                 });
                 let mut result = Response::new(Body::from_stream(transformed.chain(trailing)));
                 *result.status_mut() = status;
-                if let Some(content_type) = content_type {
-                    result.headers_mut().insert("content-type", content_type);
-                }
+                apply_response_headers(&mut result, &response_headers);
                 return result;
             }
             if is_sse && protocol == GatewayProtocol::Anthropic {
@@ -454,9 +461,7 @@ where
                 });
                 let mut result = Response::new(Body::from_stream(transformed.chain(trailing)));
                 *result.status_mut() = status;
-                if let Some(content_type) = content_type {
-                    result.headers_mut().insert("content-type", content_type);
-                }
+                apply_response_headers(&mut result, &response_headers);
                 return result;
             }
             match response.bytes().await {
@@ -469,9 +474,7 @@ where
                         else {
                             let mut result = Response::new(Body::from(bytes));
                             *result.status_mut() = status;
-                            if let Some(content_type) = content_type {
-                                result.headers_mut().insert("content-type", content_type);
-                            }
+                            apply_response_headers(&mut result, &response_headers);
                             return result;
                         };
                         let Ok(mapping) = profile.mappings.lock() else {
@@ -507,9 +510,7 @@ where
                         let Ok(body) = std::str::from_utf8(&bytes) else {
                             let mut result = Response::new(Body::from(bytes));
                             *result.status_mut() = status;
-                            if let Some(content_type) = content_type {
-                                result.headers_mut().insert("content-type", content_type);
-                            }
+                            apply_response_headers(&mut result, &response_headers);
                             return result;
                         };
                         let Ok(mapping) = profile.mappings.lock() else {
@@ -546,9 +547,7 @@ where
                     }
                     let mut result = Response::new(Body::from(bytes));
                     *result.status_mut() = status;
-                    if let Some(content_type) = content_type {
-                        result.headers_mut().insert("content-type", content_type);
-                    }
+                    apply_response_headers(&mut result, &response_headers);
                     result
                 }
                 Err(_) => (StatusCode::BAD_GATEWAY, "upstream response failed").into_response(),
@@ -568,6 +567,49 @@ where
             );
             (StatusCode::BAD_GATEWAY, "upstream request failed").into_response()
         }
+    }
+}
+
+fn copy_safe_request_headers(
+    mut request: reqwest::RequestBuilder,
+    headers: &HeaderMap,
+) -> reqwest::RequestBuilder {
+    for name in [
+        "accept",
+        "anthropic-beta",
+        "idempotency-key",
+        "openai-organization",
+        "openai-project",
+    ] {
+        if let Some(value) = headers.get(name) {
+            request = request.header(name, value);
+        }
+    }
+    request
+}
+
+fn safe_response_headers(headers: &HeaderMap) -> HeaderMap {
+    let mut safe = HeaderMap::new();
+    for (name, value) in headers {
+        if safe_response_header(name) {
+            safe.append(name.clone(), value.clone());
+        }
+    }
+    safe
+}
+
+fn safe_response_header(name: &HeaderName) -> bool {
+    let name = name.as_str();
+    matches!(
+        name,
+        "content-type" | "retry-after" | "request-id" | "x-request-id" | "openai-processing-ms"
+    ) || name.starts_with("x-ratelimit-")
+        || name.starts_with("ratelimit-")
+}
+
+fn apply_response_headers(response: &mut Response, headers: &HeaderMap) {
+    for (name, value) in headers {
+        response.headers_mut().append(name.clone(), value.clone());
     }
 }
 
@@ -608,22 +650,45 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-fn request_id(headers: &HeaderMap) -> String {
+fn request_id(headers: &HeaderMap, engine: &PrivacyEngine) -> String {
     headers
         .get("x-request-id")
         .and_then(|value| value.to_str().ok())
+        .filter(|value| safe_activity_metadata(value, engine, request_id_character))
         .map(str::to_owned)
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
 }
 
-fn request_model(body: &[u8]) -> String {
+fn request_model(body: &[u8], engine: &PrivacyEngine) -> String {
     serde_json::from_slice::<serde_json::Value>(body)
         .ok()
         .and_then(|value| {
             value
                 .get("model")
                 .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
+                .filter(|value| safe_activity_metadata(value, engine, model_character))
+                .map(ToOwned::to_owned)
         })
         .unwrap_or_default()
+}
+
+fn safe_activity_metadata(
+    value: &str,
+    engine: &PrivacyEngine,
+    allowed_character: fn(char) -> bool,
+) -> bool {
+    !value.is_empty()
+        && value.chars().count() <= MAX_ACTIVITY_METADATA_CHARS
+        && value.chars().all(allowed_character)
+        && engine
+            .inspect(value, &Policy::monitor())
+            .is_ok_and(|inspection| inspection.decisions().is_empty())
+}
+
+fn request_id_character(character: char) -> bool {
+    character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.' | ':')
+}
+
+fn model_character(character: char) -> bool {
+    request_id_character(character) || matches!(character, '/' | '@' | '+')
 }

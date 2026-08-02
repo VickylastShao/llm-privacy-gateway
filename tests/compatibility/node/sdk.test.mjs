@@ -1,11 +1,46 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import http from "node:http";
+import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
 
 const captures = [];
+const repositoryRoot = fileURLToPath(new URL("../../../", import.meta.url));
+const commandEnvironment = {
+  ...process.env,
+  PATH: `${process.env.HOME}/.cargo/bin:/usr/bin:/bin:${process.env.PATH}`,
+};
+let gatewayBuild;
+
+function buildGateway() {
+  gatewayBuild ??= new Promise((resolve, reject) => {
+    execFile(
+      "cargo",
+      ["build", "--quiet", "--locked", "-p", "lpg-cli"],
+      {
+        cwd: repositoryRoot,
+        env: commandEnvironment,
+        timeout: 120_000,
+        maxBuffer: 1024 * 1024,
+      },
+      (error, _stdout, stderr) => {
+        if (error) reject(new Error(`gateway build failed: ${stderr || error.message}`));
+        else resolve();
+      },
+    );
+  });
+  return gatewayBuild;
+}
+
+function gatewayExecutable() {
+  const targetDirectory = process.env.CARGO_TARGET_DIR
+    ? path.resolve(repositoryRoot, process.env.CARGO_TARGET_DIR)
+    : path.join(repositoryRoot, "target");
+  return path.join(targetDirectory, "debug", process.platform === "win32" ? "lpg-cli.exe" : "lpg-cli");
+}
 
 function listen() {
   return new Promise((resolve) => {
@@ -41,13 +76,26 @@ function listen() {
 }
 
 async function startGateway(protocol, upstreamPort) {
+  await buildGateway();
   const port = await new Promise((resolve) => { const server = http.createServer(); server.listen(0, "127.0.0.1", () => { const value = server.address().port; server.close(() => resolve(value)); }); });
-  const child = spawn("cargo", ["run", "--quiet", "-p", "lpg-cli", "--", "serve", "--protocol", protocol, "--bind", `127.0.0.1:${port}`, "--upstream-base-url", `http://127.0.0.1:${upstreamPort}`], { env: { ...process.env, PATH: `${process.env.HOME}/.cargo/bin:/usr/bin:/bin:${process.env.PATH}`, LPG_UPSTREAM_API_KEY: "synthetic-upstream-key", LPG_LOCAL_API_KEY: "synthetic-local-key", LPG_MAPPING_KEY_HEX: "22".repeat(32) } });
-  for (let retry = 0; retry < 100; retry += 1) {
+  const child = spawn(gatewayExecutable(), ["serve", "--protocol", protocol, "--bind", `127.0.0.1:${port}`, "--upstream-base-url", `http://127.0.0.1:${upstreamPort}`], { cwd: repositoryRoot, env: { ...commandEnvironment, LPG_UPSTREAM_API_KEY: "synthetic-upstream-key", LPG_LOCAL_API_KEY: "synthetic-local-key", LPG_MAPPING_KEY_HEX: "22".repeat(32) }, stdio: ["ignore", "ignore", "pipe"] });
+  let stderr = "";
+  child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
+  for (let retry = 0; retry < 300; retry += 1) {
     try { await fetch(`http://127.0.0.1:${port}/healthz`); return { process: child, port }; } catch { await new Promise((resolve) => setTimeout(resolve, 50)); }
+    if (child.exitCode !== null) break;
   }
   child.kill();
-  throw new Error("gateway did not start");
+  throw new Error(`gateway did not start${stderr ? `: ${stderr.trim()}` : ""}`);
+}
+
+async function stopGateway(child) {
+  if (child.exitCode !== null) return;
+  await new Promise((resolve) => {
+    child.once("exit", resolve);
+    child.kill();
+    setTimeout(resolve, 2_000).unref();
+  });
 }
 
 test("OpenAI and Anthropic Node SDKs use the local gateway without leaking canaries", { concurrency: false }, async () => {
@@ -67,7 +115,7 @@ test("OpenAI and Anthropic Node SDKs use the local gateway without leaking canar
     assert.ok(!captures.at(-1).body.includes("tool-canary@example.test"));
     await assert.rejects(() => openai.chat.completions.create({ model: "force-error", messages: [{ role: "user", content: "error-canary@example.test" }] }));
     assert.ok(!captures.at(-1).body.includes("error-canary@example.test"));
-    gateway.process.kill();
+    await stopGateway(gateway.process);
 
     gateway = await startGateway("anthropic", upstream.address().port);
     const anthropic = new Anthropic({ baseURL: `http://127.0.0.1:${gateway.port}`, apiKey: "synthetic-local-key" });
@@ -77,6 +125,6 @@ test("OpenAI and Anthropic Node SDKs use the local gateway without leaking canar
     const count = await anthropic.messages.countTokens({ model: "mock", messages: [{ role: "user", content: "count-canary@example.test" }] });
     assert.equal(count.input_tokens, 1);
     assert.ok(!captures.at(-1).body.includes("count-canary@example.test"));
-    gateway.process.kill();
+    await stopGateway(gateway.process);
   } finally { await new Promise((resolve) => upstream.close(resolve)); }
 });

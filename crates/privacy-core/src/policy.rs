@@ -24,11 +24,7 @@ impl Policy {
     }
 
     pub fn balanced() -> Self {
-        let mut policy = Self::with_defaults(PolicyAction::Pseudonymize, PolicyAction::Monitor);
-        policy
-            .actions
-            .insert(EntityKind::Email, PolicyAction::Pseudonymize);
-        policy
+        Self::with_defaults(PolicyAction::Mask, PolicyAction::Monitor)
     }
 
     pub fn monitor() -> Self {

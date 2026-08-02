@@ -96,6 +96,10 @@ fn templates_apply_documented_actions() {
         PolicyAction::Monitor
     );
     assert_eq!(
+        Policy::balanced().action_for(&EntityKind::Phone),
+        PolicyAction::Mask
+    );
+    assert_eq!(
         Policy::monitor().action_for(&EntityKind::ApiKey),
         PolicyAction::Block
     );

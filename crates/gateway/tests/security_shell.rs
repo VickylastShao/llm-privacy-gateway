@@ -1,6 +1,6 @@
 use axum::{
     extract::State,
-    http::{HeaderValue, Request, StatusCode, header},
+    http::{HeaderMap, HeaderValue, Request, StatusCode, header},
     routing::post,
 };
 use gateway::{
@@ -8,13 +8,49 @@ use gateway::{
     GatewayState, RuntimeProfile, authenticate, gateway_router, local_key_digest, router,
 };
 use http_body_util::BodyExt;
+use privacy_core::{EntityKind, PolicyAction, StaticDictionary};
 use secrecy::SecretString;
+use session_map::MemoryBackend;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use tower::ServiceExt;
 use uuid::Uuid;
 
 type Captures = Arc<Mutex<Vec<(String, String)>>>;
+
+#[test]
+fn runtime_profile_uses_its_custom_dictionary_and_phone_detector() {
+    let dictionary = StaticDictionary::new(["Project Aurora"])
+        .unwrap_or_else(|error| panic!("dictionary: {error}"));
+    let profile = RuntimeProfile::with_mapping_backend_and_dictionary(
+        Uuid::nil(),
+        GatewayProtocol::OpenAi,
+        "local-key".to_owned(),
+        "https://api.example.test/v1".to_owned(),
+        SecretString::from("upstream-key"),
+        [1; 32],
+        MemoryBackend::default(),
+        dictionary,
+    );
+
+    let custom = profile
+        .engine
+        .inspect("send Project Aurora", &profile.policy)
+        .unwrap_or_else(|error| panic!("custom inspection: {error}"));
+    assert_eq!(custom.decisions().len(), 1);
+    assert!(matches!(
+        custom.decisions()[0].detection().kind(),
+        EntityKind::Custom(term) if term == "Project Aurora"
+    ));
+    assert_eq!(custom.decisions()[0].action(), PolicyAction::Pseudonymize);
+
+    let phone = profile
+        .engine
+        .inspect("联系 13800138000", &profile.policy)
+        .unwrap_or_else(|error| panic!("phone inspection: {error}"));
+    assert_eq!(phone.decisions().len(), 1);
+    assert_eq!(phone.decisions()[0].detection().kind(), &EntityKind::Phone);
+}
 
 #[derive(Default)]
 struct CollectingSink {
@@ -93,6 +129,22 @@ async fn gateway_can_stop_gracefully_after_a_local_shutdown_signal() {
             .unwrap_or_else(|error| panic!("gateway task: {error}"))
             .is_ok()
     );
+}
+
+#[tokio::test]
+async fn listener_reports_an_occupied_loopback_port_before_serving() {
+    let occupied = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap_or_else(|error| panic!("occupy port: {error}"));
+    let address = occupied
+        .local_addr()
+        .unwrap_or_else(|error| panic!("occupied address: {error}"));
+    let config = GatewayConfig::new(address).unwrap_or_else(|error| panic!("config: {error}"));
+
+    assert!(matches!(
+        gateway::bind_listener(config).await,
+        Err(gateway::GatewayError::Listener)
+    ));
 }
 
 #[test]
@@ -238,6 +290,54 @@ async fn blocked_sensitive_request_publishes_one_safe_activity() {
     assert_eq!(events[0].model, "deepseek-chat");
     assert_eq!(events[0].report.category_counts().get("api_key"), Some(&1));
     assert!(!format!("{:?}", events[0]).contains(CANARY));
+}
+
+#[tokio::test]
+async fn activity_replaces_sensitive_model_and_request_id_metadata() {
+    const MODEL_CANARY: &str = "sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890";
+    const REQUEST_CANARY: &str = "sk-ant-api03-abcdefghijklmnopqrstuvwx123456";
+    let sink = Arc::new(CollectingSink::default());
+    let state = GatewayState::new_with_sink(
+        [RuntimeProfile::new(
+            Uuid::nil(),
+            GatewayProtocol::OpenAi,
+            "local-metadata-key".to_owned(),
+            "http://127.0.0.1:9/v1".to_owned(),
+            SecretString::from("upstream-key"),
+            [23; 32],
+        )],
+        sink.clone(),
+    )
+    .unwrap_or_else(|error| panic!("gateway state: {error}"));
+
+    let response = gateway_router(state)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header(header::AUTHORIZATION, "Bearer local-metadata-key")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("x-request-id", REQUEST_CANARY)
+                .body(axum::body::Body::from(format!(
+                    r#"{{"model":"{MODEL_CANARY}","messages":[{{"role":"user","content":"api_key=sk-test-abcdefghijklmnopqrstuvwxyz"}}]}}"#
+                )))
+                .unwrap_or_else(|error| panic!("request: {error}")),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("gateway: {error}"));
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let events = sink
+        .events
+        .lock()
+        .unwrap_or_else(|_| panic!("activity lock"));
+    assert_eq!(events.len(), 1);
+    assert!(events[0].model.is_empty());
+    assert_ne!(events[0].request_id, REQUEST_CANARY);
+    assert!(Uuid::parse_str(&events[0].request_id).is_ok());
+    let debug = format!("{:?}", events[0]);
+    assert!(!debug.contains(MODEL_CANARY));
+    assert!(!debug.contains(REQUEST_CANARY));
 }
 
 #[tokio::test]
@@ -749,4 +849,182 @@ async fn models_route_authenticates_locally_and_uses_the_configured_openai_base_
         .await
         .unwrap_or_else(|error| panic!("gateway response: {error}"));
     assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn gateway_forwards_only_safe_openai_request_and_response_headers() {
+    let captured = Arc::new(Mutex::new(None::<HeaderMap>));
+    let handler_capture = Arc::clone(&captured);
+    let mock = axum::Router::new().route(
+        "/v1/chat/completions",
+        post(move |headers: HeaderMap| {
+            let handler_capture = Arc::clone(&handler_capture);
+            async move {
+                *handler_capture
+                    .lock()
+                    .unwrap_or_else(|_| panic!("capture lock")) = Some(headers);
+                let mut response = axum::response::Response::new(axum::body::Body::from(
+                    r#"{"id":"mock","choices":[{"message":{"content":"ok"}}]}"#,
+                ));
+                response
+                    .headers_mut()
+                    .insert("content-type", HeaderValue::from_static("application/json"));
+                response
+                    .headers_mut()
+                    .insert("retry-after", HeaderValue::from_static("7"));
+                response.headers_mut().insert(
+                    "x-ratelimit-remaining-requests",
+                    HeaderValue::from_static("42"),
+                );
+                response
+                    .headers_mut()
+                    .insert("x-request-id", HeaderValue::from_static("upstream-request"));
+                response
+                    .headers_mut()
+                    .insert("set-cookie", HeaderValue::from_static("session=secret"));
+                response
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap_or_else(|error| panic!("mock bind: {error}"));
+    let address = listener
+        .local_addr()
+        .unwrap_or_else(|error| panic!("mock address: {error}"));
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, mock).await;
+    });
+    let state = GatewayState::new([RuntimeProfile::new(
+        Uuid::nil(),
+        GatewayProtocol::OpenAi,
+        "local-header-key".to_owned(),
+        format!("http://{address}/v1"),
+        SecretString::from("upstream-header-key"),
+        [24; 32],
+    )])
+    .unwrap_or_else(|error| panic!("gateway state: {error}"));
+
+    let response = gateway_router(state)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header(header::AUTHORIZATION, "Bearer local-header-key")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("openai-project", "project-fixture")
+                .header("idempotency-key", "idempotency-fixture")
+                .header("cookie", "local-cookie=secret")
+                .body(axum::body::Body::from(
+                    r#"{"model":"test","messages":[{"role":"user","content":"hello"}]}"#,
+                ))
+                .unwrap_or_else(|error| panic!("request: {error}")),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("gateway response: {error}"));
+
+    assert_eq!(
+        response.headers().get("retry-after"),
+        Some(&HeaderValue::from_static("7"))
+    );
+    assert_eq!(
+        response.headers().get("x-ratelimit-remaining-requests"),
+        Some(&HeaderValue::from_static("42"))
+    );
+    assert_eq!(
+        response.headers().get("x-request-id"),
+        Some(&HeaderValue::from_static("upstream-request"))
+    );
+    assert!(response.headers().get("set-cookie").is_none());
+    let captured = captured.lock().unwrap_or_else(|_| panic!("capture lock"));
+    let captured = captured
+        .as_ref()
+        .unwrap_or_else(|| panic!("headers missing"));
+    assert_eq!(
+        captured.get(header::AUTHORIZATION),
+        Some(&HeaderValue::from_static("Bearer upstream-header-key"))
+    );
+    assert_eq!(
+        captured.get("openai-project"),
+        Some(&HeaderValue::from_static("project-fixture"))
+    );
+    assert_eq!(
+        captured.get("idempotency-key"),
+        Some(&HeaderValue::from_static("idempotency-fixture"))
+    );
+    assert!(captured.get("cookie").is_none());
+}
+
+#[tokio::test]
+async fn gateway_preserves_anthropic_version_and_beta_headers() {
+    let captured = Arc::new(Mutex::new(None::<HeaderMap>));
+    let handler_capture = Arc::clone(&captured);
+    let mock = axum::Router::new().route(
+        "/v1/messages",
+        post(move |headers: HeaderMap| {
+            let handler_capture = Arc::clone(&handler_capture);
+            async move {
+                *handler_capture
+                    .lock()
+                    .unwrap_or_else(|_| panic!("capture lock")) = Some(headers);
+                (
+                    [(header::CONTENT_TYPE, "application/json")],
+                    r#"{"id":"msg_mock","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"mock","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}"#,
+                )
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap_or_else(|error| panic!("mock bind: {error}"));
+    let address = listener
+        .local_addr()
+        .unwrap_or_else(|error| panic!("mock address: {error}"));
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, mock).await;
+    });
+    let state = GatewayState::new([RuntimeProfile::new(
+        Uuid::nil(),
+        GatewayProtocol::Anthropic,
+        "local-anthropic-header-key".to_owned(),
+        format!("http://{address}"),
+        SecretString::from("upstream-anthropic-key"),
+        [25; 32],
+    )])
+    .unwrap_or_else(|error| panic!("gateway state: {error}"));
+
+    let response = gateway_router(state)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/messages")
+                .header("x-api-key", "local-anthropic-header-key")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("anthropic-version", "2024-01-01")
+                .header("anthropic-beta", "tools-2024-04-04")
+                .body(axum::body::Body::from(
+                    r#"{"model":"test","max_tokens":8,"messages":[{"role":"user","content":"hello"}]}"#,
+                ))
+                .unwrap_or_else(|error| panic!("request: {error}")),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("gateway response: {error}"));
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let captured = captured.lock().unwrap_or_else(|_| panic!("capture lock"));
+    let captured = captured
+        .as_ref()
+        .unwrap_or_else(|| panic!("headers missing"));
+    assert_eq!(
+        captured.get("anthropic-version"),
+        Some(&HeaderValue::from_static("2024-01-01"))
+    );
+    assert_eq!(
+        captured.get("anthropic-beta"),
+        Some(&HeaderValue::from_static("tools-2024-04-04"))
+    );
+    assert_eq!(
+        captured.get("x-api-key"),
+        Some(&HeaderValue::from_static("upstream-anthropic-key"))
+    );
 }

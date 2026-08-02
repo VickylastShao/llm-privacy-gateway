@@ -1,3 +1,10 @@
 {"id":"benign-domain","text":"www.example.com","expected":[]}
 {"id":"benign-credentials","text":"api_key is described in the documentation","expected":[]}
 {"id":"benign-identifiers","text":"110105199902300023 and 91350211I000100Y43","expected":[]}
+{"id":"benign-public-key","text":"-----BEGIN PUBLIC KEY----- prose -----END PUBLIC KEY-----","expected":[]}
+{"id":"benign-jwt-shape","text":"abcdefgh.abcdefgh.abcdefgh","expected":[]}
+{"id":"benign-ipv4-invalid","text":"999.1.1.1","expected":[]}
+{"id":"benign-host-suffix","text":"api.service.internal.example.com","expected":[]}
+{"id":"benign-mac-overlong","text":"00:1A:2B:3C:4D:5E:6F","expected":[]}
+{"id":"benign-coordinate-latitude","text":"91.0, 121.0","expected":[]}
+{"id":"benign-phone-overlong","text":"138001380001","expected":[]}

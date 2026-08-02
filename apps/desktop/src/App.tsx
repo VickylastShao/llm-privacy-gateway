@@ -86,6 +86,15 @@ export function App({
     if (!status.running) return;
     const timer = window.setInterval(() => {
       void api
+        .gatewayStatus()
+        .then((next) => {
+          if (!next.running) {
+            setStatus(next);
+            setError({ summary: t("gatewayStoppedUnexpectedly") });
+          }
+        })
+        .catch(reportError);
+      void api
         .queryActivity(activityLimit)
         .then((next) => {
           setActivity(next);
@@ -94,7 +103,7 @@ export function App({
         .catch(() => setActivityError(true));
     }, 1_000);
     return () => window.clearInterval(timer);
-  }, [api, activityLimit, status.running]);
+  }, [api, activityLimit, locale, status.running]);
 
   const changeLocale = (nextLocale: Locale) => {
     setLocale(nextLocale);

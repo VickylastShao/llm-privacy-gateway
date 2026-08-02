@@ -1,3 +1,6 @@
 {"id":"bank-positive","text":"card 4111-1111 1111-1111","expected":[{"kind":"BankCard","start":5,"end":24}]}
 {"id":"bank-invalid-check","text":"invalid 4111 1111 1111 1112","expected":[]}
 {"id":"bank-repeated","text":"repeated 1111 1111 1111 1111","expected":[]}
+{"id":"bank-compact","text":"card=4111111111111111","expected":[{"kind":"BankCard","start":5,"end":21}]}
+{"id":"bank-context","text":"before 4111 1111 1111 1111 after","expected":[{"kind":"BankCard","start":7,"end":26}]}
+{"id":"bank-too-short","text":"4111 1111 1111","expected":[]}

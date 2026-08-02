@@ -2,7 +2,7 @@ use std::{collections::HashSet, fs};
 
 use privacy_core::{
     BankCardDetector, ChinaIdDetector, CredentialsDetector, Detector, EntityKind, NetworkDetector,
-    UnifiedSocialCreditCodeDetector,
+    PhoneDetector, UnifiedSocialCreditCodeDetector,
 };
 use serde::Deserialize;
 
@@ -194,6 +194,32 @@ fn bank_cards_require_luhn_and_nonrepeated_digits() {
 }
 
 #[test]
+fn phone_detector_recognizes_bounded_china_mobile_numbers() {
+    let detector = PhoneDetector;
+    for (text, expected) in [
+        ("联系 13800138000", "13800138000"),
+        ("call +86 13912345678 now", "+86 13912345678"),
+        ("call 8613712345678 now", "8613712345678"),
+    ] {
+        assert_single(
+            &detector,
+            text,
+            EntityKind::Phone,
+            "china_mobile_phone",
+            expected,
+        );
+    }
+    for text in [
+        "12800138000",
+        "1380013800",
+        "138001380001",
+        "编号9138001380001",
+    ] {
+        assert_empty(&detector, text);
+    }
+}
+
+#[test]
 fn network_detector_validates_addresses_internal_hosts_macs_and_bounded_coordinates() {
     let detector = NetworkDetector;
     for (text, kind, source, expected) in [
@@ -302,12 +328,14 @@ fn fixture_detectors(id: &str) -> Vec<Box<dyn Detector>> {
         "china" => vec![Box::new(ChinaIdDetector)],
         "uscc" => vec![Box::new(UnifiedSocialCreditCodeDetector)],
         "bank" => vec![Box::new(BankCardDetector)],
+        "phone" => vec![Box::new(PhoneDetector)],
         "network" => vec![Box::new(NetworkDetector)],
         "benign" => vec![
             Box::new(CredentialsDetector),
             Box::new(ChinaIdDetector),
             Box::new(UnifiedSocialCreditCodeDetector),
             Box::new(BankCardDetector),
+            Box::new(PhoneDetector),
             Box::new(NetworkDetector),
         ],
         other => panic!("unknown fixture prefix: {other}"),
@@ -325,6 +353,7 @@ fn fixture_kind(kind: &str) -> EntityKind {
         "Ipv6" => EntityKind::Ipv6,
         "Jwt" => EntityKind::Jwt,
         "MacAddress" => EntityKind::MacAddress,
+        "Phone" => EntityKind::Phone,
         "PrivateKey" => EntityKind::PrivateKey,
         "InternalHostname" => EntityKind::InternalHostname,
         "Coordinate" => EntityKind::Coordinate,
@@ -340,6 +369,7 @@ fn evaluation_fixtures_have_correct_offsets_and_detector_results() {
         "credentials.jsonl",
         "china-identifiers.jsonl",
         "bank-cards.jsonl",
+        "phone-numbers.jsonl",
         "network-identifiers.jsonl",
         "benign-lookalikes.jsonl",
     ] {

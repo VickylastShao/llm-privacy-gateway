@@ -1,2 +1,7 @@
 {"id":"china-resident-id","text":"11010519491231002X","expected":[{"kind":"ChinaResidentId","start":0,"end":18}]}
 {"id":"uscc-valid","text":"91350211m000100y46","expected":[{"kind":"UnifiedSocialCreditCode","start":0,"end":18}]}
+{"id":"china-resident-id-context","text":"ID: 11010519491231002X.","expected":[{"kind":"ChinaResidentId","start":4,"end":22}]}
+{"id":"china-invalid-checksum","text":"110105194912310021","expected":[]}
+{"id":"china-invalid-date","text":"110105199902300023","expected":[]}
+{"id":"uscc-valid-context","text":"code=91350211M000100Y46","expected":[{"kind":"UnifiedSocialCreditCode","start":5,"end":23}]}
+{"id":"uscc-invalid-checksum","text":"91350211M000100Y43","expected":[]}

@@ -7,11 +7,14 @@ use std::{
 };
 
 use activity_service::{ActivityQuery, ActivityService};
-use activity_store::{ProfileInput, Protocol, Repository, validate_upstream_url};
-use gateway::{
-    GatewayConfig, GatewayProtocol, GatewayState, RuntimeProfile, local_key_digest,
-    start_with_shutdown,
+use activity_store::{
+    ProfileInput, Protocol, Repository, RepositoryMappingBackend, validate_upstream_url,
 };
+use gateway::{
+    GatewayConfig, GatewayProtocol, GatewayState, RuntimeProfile, bind_listener, local_key_digest,
+    serve_with_listener_and_shutdown,
+};
+use privacy_core::StaticDictionary;
 use rand::{TryRngCore, rngs::OsRng};
 use secrecy::{ExposeSecret, SecretString};
 #[cfg(any(not(target_os = "windows"), test))]
@@ -27,6 +30,9 @@ use tokio::sync::oneshot;
 use uuid::Uuid;
 
 const LOCAL_GATEWAY_PORT: u16 = 17_891;
+const MAX_CUSTOM_TERMS: usize = 100;
+const MAX_CUSTOM_TERM_CHARS: usize = 256;
+const MAX_CUSTOM_DICTIONARY_BYTES: usize = 1_800;
 
 #[derive(Debug, Clone, Serialize)]
 struct GatewayStatus {
@@ -40,6 +46,7 @@ struct ProfileSummary {
     protocol: String,
     upstream_url: String,
     policy: String,
+    custom_term_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -57,6 +64,8 @@ struct ProfileDraft {
     upstream_url: String,
     upstream_key: String,
     policy: String,
+    #[serde(default)]
+    custom_terms: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -66,6 +75,7 @@ struct DesktopProfile {
     upstream_key: SecretString,
     local_key: String,
     mapping_key: [u8; 32],
+    custom_terms: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -90,8 +100,8 @@ struct DesktopState {
 
 impl DesktopState {
     fn open(database_path: &std::path::Path) -> Result<Self, String> {
-        let activity = ActivityService::open(database_path)
-            .map_err(|_| "activity database unavailable")?;
+        let activity =
+            ActivityService::open(database_path).map_err(|_| "activity database unavailable")?;
         let repository =
             Repository::open(database_path).map_err(|_| "profile database unavailable")?;
         let secrets = default_secret_store();
@@ -109,6 +119,9 @@ impl DesktopState {
             let mapping = secrets
                 .get(SecretKind::Mapping, stored.id)
                 .map_err(|_| "credential store unavailable")?;
+            let dictionary = secrets
+                .get(SecretKind::Dictionary, stored.id)
+                .map_err(|_| "credential store unavailable")?;
             let (Some(upstream_key), Some(local_key), Some(mapping_key)) =
                 (upstream, local, mapping)
             else {
@@ -116,6 +129,10 @@ impl DesktopState {
             };
             let Ok(mapping_key) = decode_mapping_key(mapping_key.expose_secret()) else {
                 continue;
+            };
+            let custom_terms = match dictionary {
+                Some(value) => decode_custom_terms(value.expose_secret())?,
+                None => Vec::new(),
             };
             profiles.push(DesktopProfile {
                 id: stored.id,
@@ -128,10 +145,12 @@ impl DesktopState {
                     },
                     upstream_url: stored.upstream_url,
                     policy: stored.policy,
+                    custom_term_count: custom_terms.len(),
                 },
                 upstream_key,
                 local_key: local_key.expose_secret().to_owned(),
                 mapping_key,
+                custom_terms,
             });
         }
         Ok(Self {
@@ -168,29 +187,44 @@ fn gateway_status(state: State<'_, DesktopState>) -> Result<GatewayStatus, Strin
 }
 
 #[tauri::command]
-fn start_gateway(state: State<'_, DesktopState>) -> Result<GatewayStatus, String> {
-    let profiles = state
-        .profiles
+async fn start_gateway(state: State<'_, DesktopState>) -> Result<GatewayStatus, String> {
+    if state
+        .gateway
         .lock()
-        .map_err(|_| "profile state unavailable")?;
-    if profiles.is_empty() {
-        return Err("create a profile before starting the gateway".to_owned());
+        .map_err(|_| "gateway state unavailable")?
+        .running
+        .is_some()
+    {
+        return Ok(GatewayStatus { running: true });
     }
-    let mut runtime_profiles = Vec::with_capacity(profiles.len());
-    for profile in profiles.iter() {
-        let protocol = protocol_from_str(&profile.summary.protocol)?;
-        let mut runtime = RuntimeProfile::new(
-            profile.id,
-            protocol,
-            profile.local_key.clone(),
-            profile.summary.upstream_url.clone(),
-            profile.upstream_key.clone(),
-            profile.mapping_key,
-        );
-        runtime.policy = policy_from_str(&profile.summary.policy)?;
-        runtime_profiles.push(runtime);
-    }
-    drop(profiles);
+    let runtime_profiles = {
+        let profiles = state
+            .profiles
+            .lock()
+            .map_err(|_| "profile state unavailable")?;
+        if profiles.is_empty() {
+            return Err("create a profile before starting the gateway".to_owned());
+        }
+        let mut runtime_profiles = Vec::with_capacity(profiles.len());
+        for profile in profiles.iter() {
+            let protocol = protocol_from_str(&profile.summary.protocol)?;
+            let dictionary = StaticDictionary::new(&profile.custom_terms)
+                .map_err(|_| "custom dictionary unavailable")?;
+            let mut runtime = RuntimeProfile::with_mapping_backend_and_dictionary(
+                profile.id,
+                protocol,
+                profile.local_key.clone(),
+                profile.summary.upstream_url.clone(),
+                profile.upstream_key.clone(),
+                profile.mapping_key,
+                RepositoryMappingBackend::new(Arc::clone(&state.repository), profile.id),
+                dictionary,
+            );
+            runtime.policy = policy_from_str(&profile.summary.policy)?;
+            runtime_profiles.push(runtime);
+        }
+        runtime_profiles
+    };
     let runtime = GatewayState::new_with_sink(runtime_profiles, state.activity.clone())
         .map_err(|_| "gateway setup failed")?;
     let config = GatewayConfig::new(SocketAddr::new(
@@ -198,6 +232,9 @@ fn start_gateway(state: State<'_, DesktopState>) -> Result<GatewayStatus, String
         LOCAL_GATEWAY_PORT,
     ))
     .map_err(|_| "gateway must use loopback")?;
+    let listener = bind_listener(config)
+        .await
+        .map_err(|_| "local gateway port is unavailable")?;
     let (shutdown, receiver) = oneshot::channel();
     let mut control = state
         .gateway
@@ -215,7 +252,7 @@ fn start_gateway(state: State<'_, DesktopState>) -> Result<GatewayStatus, String
     drop(control);
     let control = Arc::clone(&state.gateway);
     tauri::async_runtime::spawn(async move {
-        let _ = start_with_shutdown(config, runtime, async move {
+        let _ = serve_with_listener_and_shutdown(listener, runtime, async move {
             let _ = receiver.await;
         })
         .await;
@@ -292,12 +329,14 @@ fn create_profile_with_state(
         .try_fill_bytes(&mut mapping_key)
         .map_err(|_| "secure random generation failed")?;
     let local_base_url = local_base_url(&gateway_protocol);
+    let custom_terms = normalize_custom_terms(draft.custom_terms)?;
     let summary = ProfileSummary {
         id: id.to_string(),
         name: draft.name,
         protocol: draft.protocol,
         upstream_url: draft.upstream_url,
         policy: draft.policy,
+        custom_term_count: custom_terms.len(),
     };
     let mapping_secret = encode_mapping_key(mapping_key);
     state
@@ -315,6 +354,14 @@ fn create_profile_with_state(
     state
         .secrets
         .put(SecretKind::Mapping, id, SecretString::from(mapping_secret))
+        .map_err(|_| "credential storage failed")?;
+    state
+        .secrets
+        .put(
+            SecretKind::Dictionary,
+            id,
+            SecretString::from(encode_custom_terms(&custom_terms)?),
+        )
         .map_err(|_| "credential storage failed")?;
     let protocol = match gateway_protocol {
         GatewayProtocol::OpenAi => Protocol::OpenAi,
@@ -347,6 +394,7 @@ fn create_profile_with_state(
             upstream_key: SecretString::from(draft.upstream_key),
             local_key: local_key.clone(),
             mapping_key,
+            custom_terms,
         });
     Ok(CreatedProfile {
         profile: summary,
@@ -382,7 +430,12 @@ fn delete_profile(id: String, state: State<'_, DesktopState>) -> Result<(), Stri
         .map_err(|_| "profile database unavailable")?
         .delete_profile(id)
         .map_err(|_| "profile persistence failed")?;
-    for kind in [SecretKind::Upstream, SecretKind::Local, SecretKind::Mapping] {
+    for kind in [
+        SecretKind::Upstream,
+        SecretKind::Local,
+        SecretKind::Mapping,
+        SecretKind::Dictionary,
+    ] {
         state
             .secrets
             .delete(kind, id)
@@ -447,26 +500,11 @@ fn rotate_local_key(
 }
 
 #[tauri::command]
-fn transform_preview(text: String) -> serde_json::Value {
-    serde_json::json!({"outbound_text": text, "warning":"preview does not persist secrets or mappings"})
-}
-
-#[tauri::command]
-fn query_activity(
-    limit: usize,
-    state: State<'_, DesktopState>,
-) -> Result<ActivityQuery, String> {
+fn query_activity(limit: usize, state: State<'_, DesktopState>) -> Result<ActivityQuery, String> {
     state
         .activity
         .query(limit, current_time_ms())
         .map_err(|_| "activity database unavailable".to_owned())
-}
-
-#[tauri::command]
-fn test_connection(upstream_url: String) -> Result<serde_json::Value, String> {
-    validate_upstream_url(&upstream_url)
-        .map_err(|_| "upstream URL must be HTTPS or loopback HTTP".to_owned())?;
-    Ok(serde_json::json!({"validated": true}))
 }
 
 fn protocol_from_str(value: &str) -> Result<GatewayProtocol, String> {
@@ -515,6 +553,37 @@ fn decode_mapping_key(value: &str) -> Result<[u8; 32], ()> {
     Ok(output)
 }
 
+fn normalize_custom_terms(terms: Vec<String>) -> Result<Vec<String>, String> {
+    let mut normalized = Vec::new();
+    for term in terms {
+        let term = term.trim();
+        if term.is_empty() || normalized.iter().any(|existing| existing == term) {
+            continue;
+        }
+        if term.chars().count() > MAX_CUSTOM_TERM_CHARS {
+            return Err("custom dictionary is too large".to_owned());
+        }
+        normalized.push(term.to_owned());
+    }
+    if normalized.len() > MAX_CUSTOM_TERMS {
+        return Err("custom dictionary is too large".to_owned());
+    }
+    let encoded = encode_custom_terms(&normalized)?;
+    if encoded.len() > MAX_CUSTOM_DICTIONARY_BYTES {
+        return Err("custom dictionary is too large".to_owned());
+    }
+    Ok(normalized)
+}
+
+fn encode_custom_terms(terms: &[String]) -> Result<String, String> {
+    serde_json::to_string(terms).map_err(|_| "custom dictionary unavailable".to_owned())
+}
+
+fn decode_custom_terms(value: &str) -> Result<Vec<String>, String> {
+    let terms = serde_json::from_str(value).map_err(|_| "custom dictionary unavailable")?;
+    normalize_custom_terms(terms)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
@@ -527,11 +596,9 @@ pub fn run() {
                 DesktopState::open(&directory.join("profiles.sqlite"))
                     .map_err(std::io::Error::other)?,
             );
-            let show = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
-            let start = MenuItem::with_id(app, "start", "Start Gateway", true, None::<&str>)?;
-            let stop = MenuItem::with_id(app, "stop", "Stop Gateway", true, None::<&str>)?;
-            let exit = MenuItem::with_id(app, "exit", "Exit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &start, &stop, &exit])?;
+            let show = MenuItem::with_id(app, "show", "显示 / Show", true, None::<&str>)?;
+            let exit = MenuItem::with_id(app, "exit", "退出 / Exit", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show, &exit])?;
             let mut tray = TrayIconBuilder::with_id("main")
                 .menu(&menu)
                 .tooltip("LLM Privacy Gateway")
@@ -541,12 +608,6 @@ pub fn run() {
                             let _ = window.show();
                             let _ = window.set_focus();
                         }
-                    }
-                    "start" => {
-                        let _ = start_gateway(app.state());
-                    }
-                    "stop" => {
-                        let _ = stop_gateway(app.state());
                     }
                     "exit" => {
                         let _ = stop_gateway(app.state());
@@ -574,9 +635,7 @@ pub fn run() {
             create_profile,
             delete_profile,
             rotate_local_key,
-            transform_preview,
-            query_activity,
-            test_connection
+            query_activity
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|error| panic!("Tauri startup failed: {error}"));
@@ -615,6 +674,7 @@ mod tests {
                 upstream_url: "https://api.example.test".to_owned(),
                 upstream_key: "fixture-upstream-key".to_owned(),
                 policy: "balanced".to_owned(),
+                custom_terms: vec!["Project A".to_owned(), " Project A ".to_owned()],
             },
             &state,
         ) {
@@ -623,6 +683,7 @@ mod tests {
         };
 
         assert_eq!(created.profile.protocol, "openai");
+        assert_eq!(created.profile.custom_term_count, 1);
         assert_eq!(
             created.local_base_url,
             format!("http://127.0.0.1:{LOCAL_GATEWAY_PORT}/v1")

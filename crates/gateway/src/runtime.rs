@@ -4,11 +4,11 @@ use std::{
 };
 
 use privacy_core::{
-    BankCardDetector, ChinaIdDetector, CredentialsDetector, NetworkDetector, Policy, PrivacyEngine,
-    StaticDictionary, UnifiedSocialCreditCodeDetector,
+    BankCardDetector, ChinaIdDetector, CredentialsDetector, NetworkDetector, PhoneDetector, Policy,
+    PrivacyEngine, StaticDictionary, UnifiedSocialCreditCodeDetector,
 };
 use secrecy::SecretString;
-use session_map::{MemoryBackend, PseudonymMap};
+use session_map::{MappingBackend, MemoryBackend, PseudonymMap};
 use uuid::Uuid;
 
 use crate::{ActivitySink, AuthProfile, GatewayProtocol, NoopActivitySink, local_key_digest};
@@ -20,7 +20,8 @@ pub struct RuntimeProfile {
     pub upstream_base_url: String,
     pub upstream_key: SecretString,
     pub policy: Policy,
-    pub mappings: Mutex<PseudonymMap<MemoryBackend>>,
+    pub engine: PrivacyEngine,
+    pub mappings: Mutex<PseudonymMap<Box<dyn MappingBackend + Send>>>,
 }
 
 impl RuntimeProfile {
@@ -32,6 +33,56 @@ impl RuntimeProfile {
         upstream_key: SecretString,
         mapping_key: [u8; 32],
     ) -> Self {
+        Self::with_mapping_backend(
+            id,
+            protocol,
+            local_key,
+            upstream_base_url,
+            upstream_key,
+            mapping_key,
+            MemoryBackend::default(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_mapping_backend<B>(
+        id: Uuid,
+        protocol: GatewayProtocol,
+        local_key: String,
+        upstream_base_url: String,
+        upstream_key: SecretString,
+        mapping_key: [u8; 32],
+        backend: B,
+    ) -> Self
+    where
+        B: MappingBackend + Send + 'static,
+    {
+        Self::with_mapping_backend_and_dictionary(
+            id,
+            protocol,
+            local_key,
+            upstream_base_url,
+            upstream_key,
+            mapping_key,
+            backend,
+            StaticDictionary::empty(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_mapping_backend_and_dictionary<B>(
+        id: Uuid,
+        protocol: GatewayProtocol,
+        local_key: String,
+        upstream_base_url: String,
+        upstream_key: SecretString,
+        mapping_key: [u8; 32],
+        backend: B,
+        dictionary: StaticDictionary,
+    ) -> Self
+    where
+        B: MappingBackend + Send + 'static,
+    {
         Self {
             id,
             protocol,
@@ -39,7 +90,18 @@ impl RuntimeProfile {
             upstream_base_url,
             upstream_key,
             policy: Policy::strict(),
-            mappings: Mutex::new(PseudonymMap::new(id, mapping_key, MemoryBackend::default())),
+            engine: PrivacyEngine::new(
+                vec![
+                    Box::new(CredentialsDetector),
+                    Box::new(ChinaIdDetector),
+                    Box::new(UnifiedSocialCreditCodeDetector),
+                    Box::new(BankCardDetector),
+                    Box::new(PhoneDetector),
+                    Box::new(NetworkDetector),
+                ],
+                dictionary,
+            ),
+            mappings: Mutex::new(PseudonymMap::new(id, mapping_key, Box::new(backend))),
         }
     }
     pub fn auth_profile(&self) -> AuthProfile {
@@ -54,7 +116,6 @@ impl RuntimeProfile {
 pub struct GatewayState {
     pub client: reqwest::Client,
     pub profiles: HashMap<Uuid, Arc<RuntimeProfile>>,
-    pub engine: PrivacyEngine,
     pub activity_sink: Arc<dyn ActivitySink>,
 }
 impl GatewayState {
@@ -75,16 +136,6 @@ impl GatewayState {
         Ok(Arc::new(Self {
             client: crate::upstream_client()?,
             profiles,
-            engine: PrivacyEngine::new(
-                vec![
-                    Box::new(CredentialsDetector),
-                    Box::new(ChinaIdDetector),
-                    Box::new(UnifiedSocialCreditCodeDetector),
-                    Box::new(BankCardDetector),
-                    Box::new(NetworkDetector),
-                ],
-                StaticDictionary::empty(),
-            ),
             activity_sink,
         }))
     }

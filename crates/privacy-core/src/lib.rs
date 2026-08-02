@@ -11,7 +11,7 @@ mod types;
 
 pub use detector::Detector;
 pub use detectors::{
-    BankCardDetector, ChinaIdDetector, CredentialsDetector, NetworkDetector,
+    BankCardDetector, ChinaIdDetector, CredentialsDetector, NetworkDetector, PhoneDetector,
     UnifiedSocialCreditCodeDetector,
 };
 pub use dictionary::StaticDictionary;

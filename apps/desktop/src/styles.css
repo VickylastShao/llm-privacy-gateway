@@ -290,7 +290,8 @@ form > label,
   font-weight: 600;
 }
 
-input:not([type="radio"]) {
+input:not([type="radio"]),
+textarea {
   width: 100%;
   min-height: 44px;
   padding: 10px 12px;
@@ -300,12 +301,25 @@ input:not([type="radio"]) {
   background: #0a1525;
 }
 
-input:not([type="radio"])::placeholder {
+input:not([type="radio"])::placeholder,
+textarea::placeholder {
   color: #6f8199;
 }
 
-input:not([type="radio"]):focus {
+input:not([type="radio"]):focus,
+textarea:focus {
   border-color: var(--primary);
+}
+
+textarea {
+  min-height: 96px;
+  resize: vertical;
+  font: inherit;
+  line-height: 1.5;
+}
+
+.custom-terms-field {
+  margin-top: 16px;
 }
 
 small {

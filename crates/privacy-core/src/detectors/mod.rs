@@ -2,12 +2,14 @@ mod bank_card;
 mod china_id;
 mod credentials;
 mod network;
+mod phone;
 mod uscc;
 
 pub use bank_card::BankCardDetector;
 pub use china_id::ChinaIdDetector;
 pub use credentials::CredentialsDetector;
 pub use network::NetworkDetector;
+pub use phone::PhoneDetector;
 pub use uscc::UnifiedSocialCreditCodeDetector;
 
 use crate::{Detection, EntityKind, PrivacyError};

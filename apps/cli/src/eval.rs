@@ -1,8 +1,8 @@
 use std::{collections::BTreeMap, fs, path::Path};
 
 use privacy_core::{
-    BankCardDetector, ChinaIdDetector, CredentialsDetector, NetworkDetector, Policy, PrivacyEngine,
-    StaticDictionary, UnifiedSocialCreditCodeDetector,
+    BankCardDetector, ChinaIdDetector, CredentialsDetector, NetworkDetector, PhoneDetector, Policy,
+    PrivacyEngine, StaticDictionary, UnifiedSocialCreditCodeDetector,
 };
 use serde::{Deserialize, Serialize};
 
@@ -75,6 +75,7 @@ fn evaluate_fixture(
             Box::new(ChinaIdDetector),
             Box::new(UnifiedSocialCreditCodeDetector),
             Box::new(BankCardDetector),
+            Box::new(PhoneDetector),
             Box::new(NetworkDetector),
         ],
         StaticDictionary::empty(),

@@ -14,6 +14,7 @@ pub enum SecretKind {
     Upstream,
     Local,
     Mapping,
+    Dictionary,
 }
 
 pub fn service_account(kind: SecretKind, profile_id: Uuid) -> (String, String) {
@@ -21,6 +22,7 @@ pub fn service_account(kind: SecretKind, profile_id: Uuid) -> (String, String) {
         SecretKind::Upstream => "upstream",
         SecretKind::Local => "local",
         SecretKind::Mapping => "mapping",
+        SecretKind::Dictionary => "dictionary",
     };
     (SERVICE_NAME.to_owned(), format!("{prefix}/{profile_id}"))
 }

@@ -3,7 +3,36 @@ use activity_store::{
 };
 use session_map::{MemoryBackend, PseudonymMap};
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+use tempfile::NamedTempFile;
 use uuid::Uuid;
+
+#[test]
+fn initialization_removes_the_unused_policy_rules_table() {
+    let file = NamedTempFile::new().unwrap_or_else(|error| panic!("temp file: {error}"));
+    {
+        let connection = rusqlite::Connection::open(file.path())
+            .unwrap_or_else(|error| panic!("legacy sqlite: {error}"));
+        connection
+            .execute_batch("CREATE TABLE policy_rules(entity_kind TEXT NOT NULL);")
+            .unwrap_or_else(|error| panic!("legacy table: {error}"));
+    }
+    {
+        let _repository =
+            Repository::open(file.path()).unwrap_or_else(|error| panic!("repository: {error}"));
+    }
+    let connection =
+        rusqlite::Connection::open(file.path()).unwrap_or_else(|error| panic!("sqlite: {error}"));
+    let count: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='policy_rules'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or_else(|error| panic!("table query: {error}"));
+    assert_eq!(count, 0);
+}
+
 #[test]
 fn profiles_keep_only_refs_and_activity_metadata() {
     let repo = Repository::open_in_memory().unwrap_or_else(|e| panic!("open: {e}"));
@@ -142,6 +171,45 @@ fn encrypted_mapping_records_restore_without_plaintext_storage() {
             .debug_export()
             .unwrap_or_else(|error| panic!("export: {error}"))
             .contains("canary@example.test")
+    );
+}
+
+#[test]
+fn repository_mapping_backend_restores_after_runtime_restart() {
+    let repository = Arc::new(Mutex::new(
+        Repository::open_in_memory().unwrap_or_else(|error| panic!("open: {error}")),
+    ));
+    let id = Uuid::new_v4();
+    repository
+        .lock()
+        .unwrap_or_else(|_| panic!("repository lock"))
+        .save_profile(&ProfileInput {
+            id,
+            name: "restart".into(),
+            protocol: Protocol::OpenAi,
+            upstream_url: "https://example.test/v1".into(),
+            upstream_secret_ref: "upstream/restart".into(),
+            local_secret_ref: "local/restart".into(),
+            local_key_digest: [4; 32],
+            policy: "strict".into(),
+        })
+        .unwrap_or_else(|error| panic!("save: {error}"));
+
+    let token = {
+        let backend = activity_store::RepositoryMappingBackend::new(Arc::clone(&repository), id);
+        let mut mappings = PseudonymMap::new(id, [9; 32], backend);
+        mappings
+            .pseudonymize("email", "restart@example.test")
+            .unwrap_or_else(|error| panic!("pseudonymize: {error}"))
+    };
+
+    let backend = activity_store::RepositoryMappingBackend::new(Arc::clone(&repository), id);
+    let mappings = PseudonymMap::new(id, [9; 32], backend);
+    assert_eq!(
+        mappings
+            .restore_text(&token)
+            .unwrap_or_else(|error| panic!("restore: {error}")),
+        "restart@example.test"
     );
 }
 

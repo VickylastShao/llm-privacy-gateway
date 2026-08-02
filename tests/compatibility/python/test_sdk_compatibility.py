@@ -68,9 +68,31 @@ def free_port():
 
 
 class GatewaySdkCompatibility(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.root = Path(__file__).resolve().parents[3]
+        cls.command_environment = os.environ.copy()
+        if os.name != "nt":
+            cls.command_environment["PATH"] = os.pathsep.join(
+                [str(Path.home() / ".cargo" / "bin"), "/usr/bin", "/bin", cls.command_environment["PATH"]]
+            )
+        build = subprocess.run(
+            ["cargo", "build", "--quiet", "--locked", "-p", "lpg-cli"],
+            cwd=cls.root,
+            env=cls.command_environment,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if build.returncode != 0:
+            raise RuntimeError(f"gateway build failed: {build.stderr.strip()}")
+        target_dir = Path(cls.command_environment.get("CARGO_TARGET_DIR", cls.root / "target"))
+        if not target_dir.is_absolute():
+            target_dir = cls.root / target_dir
+        cls.gateway_executable = target_dir / "debug" / ("lpg-cli.exe" if os.name == "nt" else "lpg-cli")
+
     def setUp(self):
         CaptureHandler.captures = []
-        self.root = Path(__file__).resolve().parents[3]
         self.upstream = ThreadingHTTPServer(("127.0.0.1", 0), CaptureHandler)
         self.upstream_thread = threading.Thread(target=self.upstream.serve_forever, daemon=True)
         self.upstream_thread.start()
@@ -79,23 +101,36 @@ class GatewaySdkCompatibility(unittest.TestCase):
 
     def tearDown(self):
         if self.gateway is not None:
-            self.gateway.terminate()
+            if self.gateway.poll() is None:
+                self.gateway.terminate()
             self.gateway.wait(timeout=10)
+            if self.gateway.stderr is not None:
+                self.gateway.stderr.close()
         self.upstream.shutdown()
         self.upstream.server_close()
 
     def start_gateway(self, protocol):
-        environment = os.environ | {"LPG_UPSTREAM_API_KEY":"synthetic-upstream-key","LPG_LOCAL_API_KEY":"synthetic-local-key","LPG_MAPPING_KEY_HEX":"11" * 32}
-        if os.name != "nt":
-            environment["PATH"] = os.pathsep.join([str(Path.home() / ".cargo" / "bin"), "/usr/bin", "/bin", environment["PATH"]])
-        self.gateway = subprocess.Popen(["cargo","run","--quiet","-p","lpg-cli","--","serve","--protocol",protocol,"--bind",f"127.0.0.1:{self.gateway_port}","--upstream-base-url",f"http://127.0.0.1:{self.upstream.server_port}"], cwd=self.root, env=environment)
-        for _ in range(100):
+        environment = self.command_environment | {"LPG_UPSTREAM_API_KEY":"synthetic-upstream-key","LPG_LOCAL_API_KEY":"synthetic-local-key","LPG_MAPPING_KEY_HEX":"11" * 32}
+        self.gateway = subprocess.Popen(
+            [self.gateway_executable, "serve", "--protocol", protocol, "--bind", f"127.0.0.1:{self.gateway_port}", "--upstream-base-url", f"http://127.0.0.1:{self.upstream.server_port}"],
+            cwd=self.root,
+            env=environment,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for _ in range(300):
             try:
                 urlopen(f"http://127.0.0.1:{self.gateway_port}/healthz", timeout=0.1)
                 return
             except Exception:
+                if self.gateway.poll() is not None:
+                    break
                 time.sleep(0.05)
-        self.fail("gateway did not start")
+        stderr = self.gateway.stderr.read().strip() if self.gateway.stderr else ""
+        if self.gateway.stderr is not None:
+            self.gateway.stderr.close()
+        self.fail(f"gateway did not start{': ' + stderr if stderr else ''}")
 
     def test_openai_sdk_uses_local_base_url_without_leaking_email(self):
         self.start_gateway("openai")

@@ -74,6 +74,27 @@ pub trait MappingBackend {
     fn clear(&mut self) -> Result<(), MapError>;
 }
 
+impl<T> MappingBackend for Box<T>
+where
+    T: MappingBackend + ?Sized,
+{
+    fn get(&self, token: &str) -> Result<Option<EncryptedRecord>, MapError> {
+        (**self).get(token)
+    }
+
+    fn put(&mut self, record: EncryptedRecord) -> Result<(), MapError> {
+        (**self).put(record)
+    }
+
+    fn remove(&mut self, token: &str) -> Result<(), MapError> {
+        (**self).remove(token)
+    }
+
+    fn clear(&mut self) -> Result<(), MapError> {
+        (**self).clear()
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MemoryBackend {
     records: HashMap<String, EncryptedRecord>,

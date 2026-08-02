@@ -1,0 +1,6 @@
+{"id":"phone-mainland","text":"13800138000","expected":[{"kind":"Phone","start":0,"end":11}]}
+{"id":"phone-country-code-space","text":"call +86 13912345678 now","expected":[{"kind":"Phone","start":5,"end":20}]}
+{"id":"phone-country-code-compact","text":"tel 8613712345678","expected":[{"kind":"Phone","start":4,"end":17}]}
+{"id":"phone-invalid-prefix","text":"12800138000","expected":[]}
+{"id":"phone-too-short","text":"1380013800","expected":[]}
+{"id":"phone-digit-neighbor","text":"9138001380001","expected":[]}

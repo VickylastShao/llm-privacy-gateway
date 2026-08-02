@@ -12,8 +12,8 @@ use std::{
 use clap::{Args, Parser, Subcommand};
 use gateway::{GatewayConfig, GatewayProtocol, GatewayState, RuntimeProfile, start_with_state};
 use privacy_core::{
-    BankCardDetector, ChinaIdDetector, CredentialsDetector, EntityKind, NetworkDetector, Policy,
-    PrivacyEngine, StaticDictionary, UnifiedSocialCreditCodeDetector,
+    BankCardDetector, ChinaIdDetector, CredentialsDetector, EntityKind, NetworkDetector,
+    PhoneDetector, Policy, PrivacyEngine, StaticDictionary, UnifiedSocialCreditCodeDetector,
 };
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
@@ -158,6 +158,7 @@ fn engine() -> PrivacyEngine {
             Box::new(ChinaIdDetector),
             Box::new(UnifiedSocialCreditCodeDetector),
             Box::new(BankCardDetector),
+            Box::new(PhoneDetector),
             Box::new(NetworkDetector),
         ],
         StaticDictionary::empty(),
