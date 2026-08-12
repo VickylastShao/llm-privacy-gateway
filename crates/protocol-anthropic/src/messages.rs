@@ -1,4 +1,4 @@
-use privacy_core::{Policy, PrivacyEngine, RequestPrivacyReport};
+use privacy_core::{Policy, PolicyAction, PrivacyEngine, RequestPrivacyReport};
 use serde_json::{Value, value::RawValue};
 use session_map::{MappingBackend, PseudonymMap, Pseudonymizer};
 use std::collections::BTreeMap;
@@ -67,6 +67,7 @@ pub fn transform_messages_request_raw_with_report<P: Pseudonymizer>(
             )?,
         );
     }
+    enforce_content_coverage(policy, report)?;
     serde_json::to_string(&request).map_err(|_| AnthropicProtocolError::Json)
 }
 
@@ -124,6 +125,7 @@ pub fn transform_messages_request_with_report<P: Pseudonymizer>(
             }
         }
     }
+    enforce_content_coverage(policy, report)?;
     Ok(())
 }
 
@@ -150,11 +152,14 @@ fn transform_content<P: Pseudonymizer>(
                         transform_tool_result(block, engine, policy, map, report)?
                     }
                     Some("tool_use") => transform_tool_input(block, engine, policy, map, report)?,
-                    _ => {}
+                    Some("thinking") | Some("redacted_thinking") => {}
+                    Some(kind) => report.record_uninspected_content(anthropic_content_label(kind)),
+                    None => report.record_uninspected_content("anthropic_content:unknown"),
                 }
             }
         }
-        _ => {}
+        Value::Null => {}
+        _ => report.record_uninspected_content("anthropic_content:invalid"),
     }
     Ok(())
 }
@@ -227,7 +232,15 @@ fn transform_raw_block<P: Pseudonymizer>(
         Some("tool_use") => transform_tool_input(&mut value, engine, policy, map, report)?,
         // Thinking, redacted_thinking, image and unknown blocks must remain raw. Anthropic
         // signatures are tied to the original serialized block rather than its JSON meaning.
-        _ => return Ok(block),
+        Some("thinking") | Some("redacted_thinking") => return Ok(block),
+        Some(kind) => {
+            report.record_uninspected_content(anthropic_content_label(kind));
+            return Ok(block);
+        }
+        None => {
+            report.record_uninspected_content("anthropic_content:unknown");
+            return Ok(block);
+        }
     }
     raw_value(serde_json::to_string(&value).map_err(|_| AnthropicProtocolError::Json)?)
 }
@@ -264,13 +277,40 @@ fn transform_tool_result<P: Pseudonymizer>(
         Value::String(_) => transform_value_string(content, engine, policy, map, report),
         Value::Array(parts) => {
             for part in parts {
-                if part.get("type").and_then(Value::as_str) == Some("text") {
-                    transform_field(part, "text", engine, policy, map, report)?;
+                match part.get("type").and_then(Value::as_str) {
+                    Some("text") => {
+                        transform_field(part, "text", engine, policy, map, report)?;
+                    }
+                    Some(kind) => {
+                        report.record_uninspected_content(anthropic_tool_result_label(kind));
+                    }
+                    None => report.record_uninspected_content("anthropic_tool_result:unknown"),
                 }
             }
             Ok(())
         }
-        _ => Ok(()),
+        _ => {
+            report.record_uninspected_content("anthropic_tool_result:invalid");
+            Ok(())
+        }
+    }
+}
+
+fn anthropic_content_label(kind: &str) -> &'static str {
+    match kind {
+        "image" => "anthropic_content:image",
+        "document" => "anthropic_content:document",
+        "search_result" | "web_search_tool_result" => "anthropic_content:search_result",
+        _ => "anthropic_content:unknown",
+    }
+}
+
+fn anthropic_tool_result_label(kind: &str) -> &'static str {
+    match kind {
+        "image" => "anthropic_tool_result:image",
+        "document" => "anthropic_tool_result:document",
+        "search_result" => "anthropic_tool_result:search_result",
+        _ => "anthropic_tool_result:unknown",
     }
 }
 
@@ -395,4 +435,15 @@ fn transform_field<P: Pseudonymizer>(
         return Ok(());
     };
     transform_value_string(value, engine, policy, map, report)
+}
+
+fn enforce_content_coverage(
+    policy: &Policy,
+    report: &mut RequestPrivacyReport,
+) -> Result<(), AnthropicProtocolError> {
+    if policy.blocks_uninspected_content() && report.has_uninspected_content() {
+        report.record_policy_action(PolicyAction::Block);
+        return Err(AnthropicProtocolError::Privacy);
+    }
+    Ok(())
 }

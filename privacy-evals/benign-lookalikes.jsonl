@@ -8,3 +8,7 @@
 {"id":"benign-mac-overlong","text":"00:1A:2B:3C:4D:5E:6F","expected":[]}
 {"id":"benign-coordinate-latitude","text":"91.0, 121.0","expected":[]}
 {"id":"benign-phone-overlong","text":"138001380001","expected":[]}
+{"id":"benign-semver","text":"release 10.20.30.400 and version 1.2.3","expected":[]}
+{"id":"benign-localized-date","text":"updated 2026-08-13 at 10:20:30","expected":[]}
+{"id":"benign-code-symbols","text":"const api_key_name = 'OPENAI_API_KEY';","expected":[]}
+{"id":"benign-public-rfc-ip","text":"documentation uses 192.0.2.300 as an invalid example","expected":[]}

@@ -116,6 +116,8 @@ struct BalanceSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    metric: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     remaining: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     total: Option<f64>,
@@ -767,106 +769,59 @@ fn update_profile_with_state(
     Ok(summary)
 }
 
-#[derive(Clone, Copy)]
-struct EnvironmentPreset {
-    provider: &'static str,
-    name: &'static str,
-    protocol: &'static str,
-    key_variables: &'static [&'static str],
-    url_variables: &'static [&'static str],
-    default_url: &'static str,
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderCatalogEntry {
+    id: String,
+    name: String,
+    urls: HashMap<String, String>,
+    environment: Option<ProviderEnvironment>,
 }
 
-const ENVIRONMENT_PRESETS: &[EnvironmentPreset] = &[
-    EnvironmentPreset {
-        provider: "openai",
-        name: "OpenAI",
-        protocol: "openai",
-        key_variables: &["OPENAI_API_KEY"],
-        url_variables: &["OPENAI_BASE_URL", "OPENAI_API_BASE"],
-        default_url: "https://api.openai.com/v1",
-    },
-    EnvironmentPreset {
-        provider: "anthropic",
-        name: "Anthropic",
-        protocol: "anthropic",
-        key_variables: &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"],
-        url_variables: &["ANTHROPIC_BASE_URL"],
-        default_url: "https://api.anthropic.com",
-    },
-    EnvironmentPreset {
-        provider: "deepseek",
-        name: "DeepSeek",
-        protocol: "openai",
-        key_variables: &["DEEPSEEK_API_KEY"],
-        url_variables: &["DEEPSEEK_BASE_URL"],
-        default_url: "https://api.deepseek.com",
-    },
-    EnvironmentPreset {
-        provider: "gemini",
-        name: "Google Gemini",
-        protocol: "openai",
-        key_variables: &["GEMINI_API_KEY"],
-        url_variables: &["GEMINI_BASE_URL"],
-        default_url: "https://generativelanguage.googleapis.com/v1beta/openai/",
-    },
-    EnvironmentPreset {
-        provider: "openrouter",
-        name: "OpenRouter",
-        protocol: "openai",
-        key_variables: &["OPENROUTER_API_KEY"],
-        url_variables: &["OPENROUTER_BASE_URL"],
-        default_url: "https://openrouter.ai/api/v1",
-    },
-    EnvironmentPreset {
-        provider: "groq",
-        name: "Groq",
-        protocol: "openai",
-        key_variables: &["GROQ_API_KEY"],
-        url_variables: &["GROQ_BASE_URL"],
-        default_url: "https://api.groq.com/openai/v1",
-    },
-    EnvironmentPreset {
-        provider: "xai",
-        name: "xAI",
-        protocol: "openai",
-        key_variables: &["XAI_API_KEY"],
-        url_variables: &["XAI_BASE_URL"],
-        default_url: "https://api.x.ai/v1",
-    },
-    EnvironmentPreset {
-        provider: "mistral",
-        name: "Mistral AI",
-        protocol: "openai",
-        key_variables: &["MISTRAL_API_KEY"],
-        url_variables: &["MISTRAL_BASE_URL"],
-        default_url: "https://api.mistral.ai/v1",
-    },
-    EnvironmentPreset {
-        provider: "kimi",
-        name: "Kimi",
-        protocol: "openai",
-        key_variables: &["MOONSHOT_API_KEY"],
-        url_variables: &["MOONSHOT_BASE_URL"],
-        default_url: "https://api.moonshot.cn/v1",
-    },
-    EnvironmentPreset {
-        provider: "dashscope",
-        name: "Alibaba Model Studio",
-        protocol: "openai",
-        key_variables: &["DASHSCOPE_API_KEY"],
-        url_variables: &["DASHSCOPE_BASE_URL"],
-        default_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    },
-    EnvironmentPreset {
-        provider: "siliconflow",
-        name: "SiliconFlow",
-        protocol: "openai",
-        key_variables: &["SILICONFLOW_API_KEY"],
-        url_variables: &["SILICONFLOW_BASE_URL"],
-        default_url: "https://api.siliconflow.cn/v1",
-    },
-];
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderEnvironment {
+    protocol: String,
+    key_variables: Vec<String>,
+    url_variables: Vec<String>,
+}
+
+#[derive(Debug)]
+struct EnvironmentPreset {
+    provider: String,
+    name: String,
+    protocol: String,
+    key_variables: Vec<String>,
+    url_variables: Vec<String>,
+    default_url: String,
+}
+
+fn environment_presets() -> Result<Vec<EnvironmentPreset>, String> {
+    let catalog = serde_json::from_str::<Vec<ProviderCatalogEntry>>(include_str!(
+        "../../../../config/providers.json"
+    ))
+    .map_err(|_| "provider catalog is invalid")?;
+    catalog
+        .into_iter()
+        .filter_map(|provider| {
+            provider.environment.map(|environment| {
+                let default_url = provider
+                    .urls
+                    .get(&environment.protocol)
+                    .cloned()
+                    .ok_or_else(|| "provider catalog is missing a protocol URL".to_owned())?;
+                Ok(EnvironmentPreset {
+                    provider: provider.id,
+                    name: provider.name,
+                    protocol: environment.protocol,
+                    key_variables: environment.key_variables,
+                    url_variables: environment.url_variables,
+                    default_url,
+                })
+            })
+        })
+        .collect()
+}
 
 #[derive(Debug, Clone)]
 struct EnvironmentValue {
@@ -880,11 +835,11 @@ fn scan_environment_profiles(
 ) -> Result<Vec<DiscoveredProfile>, String> {
     let mut candidates = Vec::new();
     let mut secrets = HashMap::new();
-    for preset in ENVIRONMENT_PRESETS {
+    for preset in environment_presets()? {
         let Some((key_variable, key)) = preset
             .key_variables
             .iter()
-            .find_map(|name| environment_value(name).map(|value| (*name, value)))
+            .find_map(|name| environment_value(name).map(|value| (name, value)))
         else {
             continue;
         };
@@ -894,32 +849,32 @@ fn scan_environment_profiles(
         let url_value = preset
             .url_variables
             .iter()
-            .find_map(|name| environment_value(name).map(|value| (*name, value)));
+            .find_map(|name| environment_value(name).map(|value| (name, value)));
         let upstream_url = url_value.as_ref().map_or_else(
-            || preset.default_url.to_owned(),
+            || preset.default_url.clone(),
             |(_, value)| value.value.clone(),
         );
         if validate_upstream_url(&upstream_url).is_err() {
             continue;
         }
-        let (provider, name) = infer_provider(&upstream_url, preset.provider, preset.name);
+        let (provider, name) = infer_provider(&upstream_url, &preset.provider, &preset.name);
         let id = Uuid::new_v4().to_string();
         candidates.push(DiscoveredProfile {
             id: id.clone(),
             provider: provider.to_owned(),
             name: name.to_owned(),
-            protocol: preset.protocol.to_owned(),
+            protocol: preset.protocol.clone(),
             upstream_url: upstream_url.clone(),
             key_preview: mask_secret(&key.value),
             source: key.source.to_owned(),
-            key_variable: key_variable.to_owned(),
-            url_variable: url_value.map(|(name, _)| name.to_owned()),
+            key_variable: key_variable.clone(),
+            url_variable: url_value.map(|(name, _)| name.clone()),
         });
         secrets.insert(
             id,
             DiscoveredSecret {
                 key: SecretString::from(key.value),
-                protocol: preset.protocol.to_owned(),
+                protocol: preset.protocol.clone(),
                 upstream_url: upstream_url.clone(),
                 expires_at_ms: current_time_ms().saturating_add(DISCOVERY_TTL_MS),
             },
@@ -1372,6 +1327,7 @@ async fn query_provider_balance(
             return Ok(BalanceSummary {
                 supported: false,
                 provider: None,
+                metric: None,
                 remaining: None,
                 total: None,
                 used: None,
@@ -1411,7 +1367,7 @@ fn parse_balance_response(
     provider: &str,
     body: &serde_json::Value,
 ) -> Result<BalanceSummary, String> {
-    let (remaining, total, used, unit, detail) = match provider {
+    let (metric, remaining, total, used, unit, detail) = match provider {
         "DeepSeek" => {
             let info = body
                 .get("balance_infos")
@@ -1419,6 +1375,7 @@ fn parse_balance_response(
                 .and_then(|items| items.first())
                 .ok_or_else(|| "balance response was invalid".to_owned())?;
             (
+                "account_balance",
                 json_number(info, "total_balance")
                     .ok_or_else(|| "balance response was invalid".to_owned())?
                     .into(),
@@ -1433,6 +1390,7 @@ fn parse_balance_response(
         "Kimi" => {
             let data = body.get("data").unwrap_or(body);
             (
+                "account_balance",
                 json_number(data, "available_balance")
                     .ok_or_else(|| "balance response was invalid".to_owned())?
                     .into(),
@@ -1445,6 +1403,7 @@ fn parse_balance_response(
         "SiliconFlow" => {
             let data = body.get("data").unwrap_or(body);
             (
+                "account_balance",
                 json_number(data, "totalBalance")
                     .ok_or_else(|| "balance response was invalid".to_owned())?
                     .into(),
@@ -1469,13 +1428,21 @@ fn parse_balance_response(
             } else {
                 None
             };
-            (remaining, total, used, Some("USD".to_owned()), detail)
+            (
+                "api_key_limit",
+                remaining,
+                total,
+                used,
+                Some("USD".to_owned()),
+                detail,
+            )
         }
         _ => return Err("balance provider is unsupported".to_owned()),
     };
     Ok(BalanceSummary {
         supported: true,
         provider: Some(provider.to_owned()),
+        metric: Some(metric.to_owned()),
         remaining,
         total,
         used,
@@ -1714,6 +1681,23 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_provider_catalog_supplies_environment_defaults() {
+        let presets = environment_presets().unwrap_or_else(|error| panic!("catalog: {error}"));
+        assert!(presets.iter().any(|preset| {
+            preset.provider == "deepseek"
+                && preset.protocol == "openai"
+                && preset.default_url == "https://api.deepseek.com"
+        }));
+        assert!(presets.iter().any(|preset| {
+            preset.provider == "anthropic"
+                && preset
+                    .key_variables
+                    .iter()
+                    .any(|name| name == "ANTHROPIC_API_KEY")
+        }));
+    }
     use secret_store::SecretStoreError;
 
     #[derive(Debug, Default)]
@@ -2393,7 +2377,9 @@ mod tests {
 
         assert!(
             parse_balance_response("DeepSeek", &deepseek).is_ok_and(|value| {
-                value.remaining == Some(110.0) && value.unit.as_deref() == Some("CNY")
+                value.metric.as_deref() == Some("account_balance")
+                    && value.remaining == Some(110.0)
+                    && value.unit.as_deref() == Some("CNY")
             })
         );
         assert!(parse_balance_response("Kimi", &kimi).is_ok_and(|value| {
@@ -2405,7 +2391,8 @@ mod tests {
         );
         assert!(
             parse_balance_response("OpenRouter", &openrouter).is_ok_and(|value| {
-                value.remaining == Some(74.5)
+                value.metric.as_deref() == Some("api_key_limit")
+                    && value.remaining == Some(74.5)
                     && value.total == Some(100.0)
                     && value.used == Some(25.5)
             })

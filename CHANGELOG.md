@@ -21,6 +21,10 @@ All notable changes to this project are documented in this file. The format foll
 - Protocol-aware restoration for nested OpenAI and Anthropic tool values and final streaming events.
 - Keyboard-complete overflow actions, native modal confirmation behavior, and visible clipboard
   failure feedback in the single-page desktop workflow.
+- Coverage-aware request filtering: strict profiles block uninspected content blocks, while balanced
+  and monitor profiles forward them with bounded, payload-free activity feedback.
+- A shared provider catalog used by both the desktop UI and environment discovery.
+- Distinct account-balance and API-key-limit labels for provider quota responses.
 
 ### Security
 
@@ -33,6 +37,7 @@ All notable changes to this project are documented in this file. The format foll
   explicit action.
 - Editing a connection cannot reuse a saved upstream key after the network origin changes; a new
   key is required before the connection can target another server.
+- GitHub CodeQL analysis and build-provenance attestations for public release artifacts.
 
 ## [0.1.0] - Unreleased
 

@@ -117,3 +117,19 @@ fn report_deduplicates_and_limits_previews_per_kind() {
     assert!(result.is_ok());
     assert_eq!(report.previews().len(), 3);
 }
+
+#[test]
+fn report_tracks_uninspected_content_without_recording_payloads() {
+    let mut report = RequestPrivacyReport::default();
+    report.record_uninspected_content("openai_responses_content:input_image");
+    report.record_uninspected_content("openai_responses_content:input_image");
+    report.record_uninspected_content("openai_responses_content:input_file");
+
+    assert!(report.has_uninspected_content());
+    assert_eq!(
+        report.category_counts().get("uninspected_content"),
+        Some(&3)
+    );
+    assert_eq!(report.actions(), &["warn"]);
+    assert_eq!(report.previews().len(), 2);
+}

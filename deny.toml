@@ -1,9 +1,9 @@
 [advisories]
 yanked = "deny"
 ignore = [
-    # Current Tauri 2 pulls urlpattern through tauri-utils. These advisories mark
-    # the rust-unic transitive crates as unmaintained; they report no known
-    # vulnerability and have no safe upgrade path in the current Tauri graph.
+    # Tauri 2.11.5 pulls urlpattern through tauri-utils. These advisories mark
+    # the rust-unic transitive crates as unmaintained, report no vulnerability,
+    # and currently have no safe upgrade path in the Tauri dependency graph.
     "RUSTSEC-2025-0075",
     "RUSTSEC-2025-0080",
     "RUSTSEC-2025-0081",

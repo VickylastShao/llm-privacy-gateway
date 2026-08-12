@@ -16,19 +16,20 @@ pub struct Policy {
     default_action: PolicyAction,
     actions: HashMap<EntityKind, PolicyAction>,
     whitelist: HashSet<String>,
+    block_uninspected_content: bool,
 }
 
 impl Policy {
     pub fn strict() -> Self {
-        Self::with_defaults(PolicyAction::Pseudonymize, PolicyAction::Pseudonymize)
+        Self::with_defaults(PolicyAction::Pseudonymize, PolicyAction::Pseudonymize, true)
     }
 
     pub fn balanced() -> Self {
-        Self::with_defaults(PolicyAction::Mask, PolicyAction::Monitor)
+        Self::with_defaults(PolicyAction::Mask, PolicyAction::Monitor, false)
     }
 
     pub fn monitor() -> Self {
-        Self::with_defaults(PolicyAction::Monitor, PolicyAction::Monitor)
+        Self::with_defaults(PolicyAction::Monitor, PolicyAction::Monitor, false)
     }
 
     pub fn with_whitelist<I, S>(mut self, values: I) -> Self
@@ -50,11 +51,20 @@ impl Policy {
             .unwrap_or(self.default_action)
     }
 
+    #[must_use]
+    pub const fn blocks_uninspected_content(&self) -> bool {
+        self.block_uninspected_content
+    }
+
     pub(crate) fn allows_value(&self, value: &str) -> bool {
         self.whitelist.contains(value)
     }
 
-    fn with_defaults(default_action: PolicyAction, network_action: PolicyAction) -> Self {
+    fn with_defaults(
+        default_action: PolicyAction,
+        network_action: PolicyAction,
+        block_uninspected_content: bool,
+    ) -> Self {
         let mut actions = HashMap::new();
         for kind in [
             EntityKind::ApiKey,
@@ -78,6 +88,7 @@ impl Policy {
             default_action,
             actions,
             whitelist: HashSet::new(),
+            block_uninspected_content,
         }
     }
 }

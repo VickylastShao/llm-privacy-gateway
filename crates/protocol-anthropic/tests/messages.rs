@@ -17,7 +17,7 @@ fn signed_thinking_blocks_remain_byte_equivalent_while_tool_results_transform() 
     let mut map = PseudonymMap::new(Uuid::nil(), [8; 32], MemoryBackend::default());
     let mut request = json!({"system":"Alpha Project","messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"Alpha Project","signature":"opaque-signature"},{"type":"tool_result","tool_use_id":"Alpha Project","content":[{"type":"text","text":"Alpha Project"},{"type":"image","source":{"type":"base64","data":"Alpha Project"}}]},{"type":"tool_use","id":"Alpha Project","name":"read","input":{"project":"Alpha Project","nested":["Alpha Project",7]}}]}]});
     let signed = request["messages"][0]["content"][0].clone();
-    transform_messages_request(&mut request, &engine, &Policy::strict(), &mut map)
+    transform_messages_request(&mut request, &engine, &Policy::balanced(), &mut map)
         .unwrap_or_else(|error| panic!("transform: {error}"));
     assert_ne!(request["system"], "Alpha Project");
     assert_eq!(request["messages"][0]["content"][0], signed);
@@ -57,7 +57,7 @@ fn raw_adapter_keeps_signed_thinking_block_bytes_while_transforming_tool_result(
         r#"{{"model":"test","messages":[{{"role":"assistant","content":[{signed},{{"type":"tool_result","tool_use_id":"u1","content":[{{"type":"text","text":"Alpha Project"}},{{"type":"image","source":{{"data":"Alpha Project"}}}}]}},{{"type":"tool_use","id":"u2","name":"lookup","input":{{"project":"Alpha Project"}}}}]}}]}}"#
     );
 
-    let output = transform_messages_request_raw(&request, &engine, &Policy::strict(), &mut map)
+    let output = transform_messages_request_raw(&request, &engine, &Policy::balanced(), &mut map)
         .unwrap_or_else(|error| panic!("transform: {error}"));
 
     assert!(output.contains(signed));
@@ -75,6 +75,50 @@ fn raw_adapter_keeps_signed_thinking_block_bytes_while_transforming_tool_result(
         parsed["messages"][0]["content"][1]["content"][1]["source"]["data"],
         "Alpha Project"
     );
+}
+
+#[test]
+fn strict_policy_rejects_uninspected_anthropic_content() {
+    let engine = PrivacyEngine::new(Vec::new(), StaticDictionary::empty());
+    let mut map = PseudonymMap::new(Uuid::nil(), [20; 32], MemoryBackend::default());
+    let request = r#"{"messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"opaque"}}]}]}"#;
+    let mut report = RequestPrivacyReport::default();
+
+    assert!(
+        transform_messages_request_raw_with_report(
+            request,
+            &engine,
+            &Policy::strict(),
+            &mut map,
+            &mut report,
+        )
+        .is_err()
+    );
+    assert!(report.has_uninspected_content());
+    assert!(report.actions().contains(&"block".to_owned()));
+}
+
+#[test]
+fn balanced_policy_reports_uninspected_anthropic_content() {
+    let engine = PrivacyEngine::new(Vec::new(), StaticDictionary::empty());
+    let mut map = PseudonymMap::new(Uuid::nil(), [21; 32], MemoryBackend::default());
+    let request = r#"{"messages":[{"role":"user","content":[{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"opaque"}}]}]}"#;
+    let mut report = RequestPrivacyReport::default();
+
+    transform_messages_request_raw_with_report(
+        request,
+        &engine,
+        &Policy::balanced(),
+        &mut map,
+        &mut report,
+    )
+    .unwrap_or_else(|error| panic!("transform: {error}"));
+
+    assert_eq!(
+        report.category_counts().get("uninspected_content"),
+        Some(&1)
+    );
+    assert!(report.actions().contains(&"warn".to_owned()));
 }
 
 #[test]

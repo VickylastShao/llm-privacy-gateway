@@ -5,8 +5,10 @@ Implemented protocol primitives:
 | Protocol | JSON request fields | SSE helper |
 | --- | --- | --- |
 | OpenAI Chat Completions | message strings, text blocks, and string leaves inside tool/function arguments | text and per-choice/per-tool argument restoration, including split placeholders |
-| OpenAI Responses | instructions, string input, `input_text`, and text inside `function_call_output` | per-output text/argument restoration plus final response, item, and part events |
+| OpenAI Responses | instructions, string input, `input_text`, `function_call.arguments`, and text inside `function_call_output` | per-output text/argument restoration plus final response, item, and part events |
 | Anthropic Messages/count_tokens | system/text blocks, text-form tool results, and nested string leaves inside `tool_use.input`; signed thinking remains raw | CRLF/LF and multiline framing, text/tool-input restoration, and buffered `input_json_delta` restoration |
+
+Content blocks that can carry data but are not inspected are classified before forwarding. Strict profiles fail closed and record a blocked privacy activity. Balanced and monitor profiles preserve the block byte-for-byte, forward it, and record a `Partially inspected` activity with a bounded content-type label. The activity never stores the block payload. Signed Anthropic thinking and encrypted reasoning are preserved protocol data rather than user content and do not by themselves trigger the coverage warning.
 
 Gateway JSON forwarding is implemented. Mock compatibility coverage pins OpenAI Python 2.45.0, Anthropic Python 0.116.0, OpenAI Node 6.46.0, and Anthropic TypeScript SDK 0.111.0. The pinned Python and Node suites exercise OpenAI Chat Completions JSON, SSE, tools, and error propagation, plus Anthropic Messages and `count_tokens`; every request contains a synthetic canary that must be absent from the mock upstream capture. Rust protocol tests additionally cover OpenAI Responses, nested tool inputs, unknown-event passthrough, signed-thinking preservation, and placeholders split across stream chunks.
 

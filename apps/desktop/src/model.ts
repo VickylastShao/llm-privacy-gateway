@@ -1,3 +1,5 @@
+import providerCatalog from "../../../config/providers.json";
+
 export type Protocol = "openai" | "anthropic";
 export type Policy = "strict" | "balanced" | "monitor";
 export type ProviderId =
@@ -77,6 +79,7 @@ export type UsageResponse = {
 export type BalanceSummary = {
   supported: boolean;
   provider?: string;
+  metric?: "account_balance" | "api_key_limit";
   remaining?: number;
   total?: number;
   used?: number;
@@ -124,42 +127,11 @@ export function defaultUpstreamUrl(protocol: Protocol): string {
     : "https://api.openai.com/v1";
 }
 
-export const providerPresets: ProviderPreset[] = [
-  { id: "custom", name: "Custom", urls: {} },
-  { id: "openai", name: "OpenAI", urls: { openai: "https://api.openai.com/v1" } },
-  { id: "anthropic", name: "Anthropic", urls: { anthropic: "https://api.anthropic.com" } },
-  {
-    id: "deepseek",
-    name: "DeepSeek",
-    urls: {
-      openai: "https://api.deepseek.com",
-      anthropic: "https://api.deepseek.com/anthropic",
-    },
-  },
-  {
-    id: "gemini",
-    name: "Google Gemini",
-    urls: { openai: "https://generativelanguage.googleapis.com/v1beta/openai/" },
-  },
-  { id: "openrouter", name: "OpenRouter", urls: { openai: "https://openrouter.ai/api/v1" } },
-  { id: "groq", name: "Groq", urls: { openai: "https://api.groq.com/openai/v1" } },
-  { id: "xai", name: "xAI", urls: { openai: "https://api.x.ai/v1" } },
-  { id: "mistral", name: "Mistral AI", urls: { openai: "https://api.mistral.ai/v1" } },
-  { id: "kimi", name: "Kimi", urls: { openai: "https://api.moonshot.cn/v1" } },
-  {
-    id: "dashscope",
-    name: "Alibaba Model Studio",
-    urls: {
-      openai: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-      anthropic: "https://dashscope.aliyuncs.com/apps/anthropic",
-    },
-  },
-  {
-    id: "siliconflow",
-    name: "SiliconFlow",
-    urls: { openai: "https://api.siliconflow.cn/v1" },
-  },
-];
+export const providerPresets: ProviderPreset[] = providerCatalog.map((provider) => ({
+  id: provider.id as ProviderId,
+  name: provider.name,
+  urls: provider.urls as Partial<Record<Protocol, string>>,
+}));
 
 export function providerPreset(id: ProviderId): ProviderPreset {
   return providerPresets.find((provider) => provider.id === id) ?? providerPresets[0];

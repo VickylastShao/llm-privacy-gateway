@@ -23,6 +23,7 @@ const categoryKeys: Record<string, TranslationKey> = {
   internal_hostname: "categoryInternalHostname",
   coordinate: "categoryCoordinate",
   custom: "categoryCustom",
+  uninspected_content: "categoryUninspectedContent",
 };
 
 const actionKeys: Record<string, TranslationKey> = {
@@ -30,10 +31,11 @@ const actionKeys: Record<string, TranslationKey> = {
   pseudonymize: "actionPseudonymized",
   mask: "actionMasked",
   monitor: "actionMonitored",
+  warn: "actionWarning",
 };
 
 function primaryAction(actions: string[]): string {
-  return ["block", "pseudonymize", "mask", "monitor"].find((item) =>
+  return ["block", "warn", "pseudonymize", "mask", "monitor"].find((item) =>
     actions.includes(item),
   ) ?? "monitor";
 }
@@ -102,7 +104,11 @@ function ActivityDetails({
         </div>
       </dl>
       <div className="activity-preview">
-        <strong>{t("activitySafePreview")}</strong>
+        <strong>
+          {activity.category_counts.uninspected_content
+            ? t("activityCoverageDetail")
+            : t("activitySafePreview")}
+        </strong>
         {activity.preview_available ? (
           activity.previews.length > 0 ? (
             <>

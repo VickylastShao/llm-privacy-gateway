@@ -1,26 +1,26 @@
 # Release status
 
-Last reviewed: 2026-08-02
+Last reviewed: 2026-08-13
 
 ## Verdict
 
-**Blocked for public release.** The implemented MVP passes the automated gates and now builds as a native Windows GUI application and unsigned NSIS installer. The permanent product identity, public GitHub repository, private vulnerability-reporting channel, and automated clean-runner lifecycle are configured and verified. A public release still requires manual Windows interaction and upgrade checks, real-provider verification, and Authenticode signing material.
+**Blocked for public release.** The implemented MVP passes its code, test, dependency, and unsigned-build gates and now builds as a native Windows GUI application and unsigned NSIS installer. The final release preflight deliberately remains blocked while the changelog is undated. A public release still requires manual Windows interaction and upgrade checks, real-provider verification, and Authenticode signing material.
 
 ## Verified automatically
 
 | Gate | Result |
 | --- | --- |
 | Rust workspace format, tests, and strict Clippy | Pass |
-| Frontend type check, production build, and 37 Vitest tests | Pass |
+| Frontend type check, production build, and 38 Vitest tests | Pass |
 | OpenAI and Anthropic Node SDK mock compatibility | Pass |
 | OpenAI and Anthropic Python SDK mock compatibility | Pass |
 | Rust dependency advisories, licenses, and sources | Pass with documented Tauri `rust-unic` unmaintained-advisory exceptions and non-blocking duplicate-dependency warnings |
-| npm high/critical vulnerability audit | Pass: zero vulnerabilities |
+| npm high/critical vulnerability audit | Pass on 2026-08-13 after upgrading transitive `nanoid` to 3.3.18 and `undici` to 7.29.0 |
 | GitHub Dependabot alerts | Reviewed for the Windows-only release: `GHSA-wrw7-89jp-8q8g` affects the Linux/GTK-only `glib 0.18.5` dependency, which is absent from the `x86_64-pc-windows-msvc` graph; dismissed as not used and must be reopened before Linux support |
 | Deterministic privacy evaluation corpus | Pass for the current synthetic corpus |
 | Repository secret-pattern scan | Pass after classifying documented synthetic canaries |
 | Automated full-history secret scan | Pass in GitHub CI with pinned Gitleaks Action 3.0.0; only the two documented synthetic detector-fixture paths are allowlisted for the JWT and private-key rules |
-| Windows desktop Rust tests | Pass: 19 tests on the native MSVC target |
+| Windows desktop Rust tests | Pass: 20 tests on the native MSVC target |
 | Windows desktop strict Clippy | Pass on the native MSVC target |
 | Preview-identity data migration | Pass: WAL-consistent backup, destination non-overwrite, integrity check, atomic publish, and source preservation |
 | Activity schema migration | Pass: all schema changes are transactional; a forced migration failure preserves the legacy table and rows |
@@ -30,7 +30,10 @@ Last reviewed: 2026-08-02
 | Current-host packaged-runner lifecycle | Pass with limitation: silent install/reinstall, launch, stopped-window exit, running-window tray hide, and data preservation worked, but Windows redirected the install into the Codex package's virtualized `LocalAppData`; this is not clean-user evidence |
 | Local gateway lifecycle | Pass: temporary profile started the gateway, unauthenticated access returned 401, stop and profile cleanup succeeded, and no temporary plaintext canary remained in SQLite |
 | Desktop interaction regression | Pass: clipboard failures are visible, menus support arrow/Home/End/Escape navigation, dialogs use native modal behavior, and startup no longer scrolls past recovery notices |
-| Public-release preflight | Pass: unit tests cover ready and incomplete manifests; the release workflow now fails closed on temporary identity, missing publisher/repository, placeholder links/date, or missing private security URL |
+| Public-release preflight validation | Pass: unit tests cover ready and incomplete manifests; the current preflight intentionally fails because `0.1.0` has no final date |
+| Unsupported content coverage | Pass locally: strict profiles block uninspected OpenAI/Anthropic content blocks; balanced and monitor profiles forward them with payload-free activity feedback |
+| Provider catalog consistency | Pass locally: UI presets and environment discovery consume the same checked-in catalog |
+| Static and provenance controls | Configured: Biome frontend lint, Rust/JavaScript CodeQL, and GitHub artifact attestations; GitHub runs remain required before merge/release |
 | Permanent release identity | Pass locally: application identifier `com.vickylast.llmprivacygateway`, publisher `vickylast`, and repository links use `VickylastShao/llm-privacy-gateway` |
 | GitHub release channel | Pass: the public `VickylastShao/llm-privacy-gateway` repository exists and private vulnerability reporting is enabled |
 | Clean-runner lifecycle automation | Pass in [GitHub CI run 30747661226](https://github.com/VickylastShao/llm-privacy-gateway/actions/runs/30747661226): CI installed, launched, normally closed, reinstalled, uninstalled, and checked database preservation on a fresh `windows-latest` runner; the release workflow repeats it with signature verification enabled |
@@ -40,9 +43,12 @@ These results do not substitute for the Windows and real-provider checks below.
 Latest local unsigned package:
 
 - `LLM Privacy Gateway_0.1.0_x64-setup.exe`
-- 4,384,144 bytes
-- SHA-256: `fade1fdca76e0a865924ffcba903ce0b2f49f61eba4d82cffb084c2135294663`
-- controlled reinstall in the current packaged runner preserved the existing profile database with byte-identical SHA-256
+- 4,378,272 bytes
+- SHA-256: `f16a35794a1e80bf77f94605e43acb8043bb648811087ab05b15e44c78bb983c`
+- PE subsystem: Windows GUI
+- Authenticode status: `NotSigned` (expected for this local candidate)
+
+The previously recorded controlled reinstall evidence applies to the earlier unsigned candidate; the current candidate still requires the clean-Windows and signed-release checks listed below.
 
 ## Release blockers
 

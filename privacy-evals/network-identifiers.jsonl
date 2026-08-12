@@ -10,4 +10,7 @@
 {"id":"network-ipv6-context","text":"[2001:db8:85a3::8a2e:370:7334]","expected":[{"kind":"Ipv6","start":1,"end":29}]}
 {"id":"network-mac-hyphen","text":"mac 00-1A-2B-3C-4D-5E","expected":[{"kind":"MacAddress","start":4,"end":21}]}
 {"id":"network-host-lan","text":"host db.cluster.lan","expected":[{"kind":"InternalHostname","start":5,"end":19}]}
+{"id":"network-email-markdown","text":"owner: [QA Team](mailto:qa.team@example.test)","expected":[{"kind":"Email","start":24,"end":44}]}
+{"id":"network-ipv4-log","text":"2026-08-13T10:20:30Z peer=172.16.4.19 status=ok","expected":[{"kind":"Ipv4","start":26,"end":37}]}
+{"id":"network-host-config","text":"DATABASE_HOST=db.prod.internal","expected":[{"kind":"InternalHostname","start":14,"end":30}]}
 {"id":"network-coordinate-negative","text":"coord -31.2304, -121.4737","expected":[{"kind":"Coordinate","start":6,"end":25}]}

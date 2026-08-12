@@ -936,6 +936,11 @@ dd {
   background: #443719;
 }
 
+.activity-action--warn {
+  color: #ffd39b;
+  background: #553118;
+}
+
 .activity-categories {
   display: flex;
   grid-column: 2 / -1;

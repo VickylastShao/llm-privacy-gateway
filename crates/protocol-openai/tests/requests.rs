@@ -23,7 +23,7 @@ fn setup() -> (PrivacyEngine, PseudonymMap<MemoryBackend>) {
 fn chat_mutates_only_whitelisted_text_and_tool_arguments() {
     let (engine, mut map) = setup();
     let mut request = json!({"messages":[{"role":"user","content":[{"type":"text","text":"Alpha Project"},{"type":"image_url","image_url":{"url":"data:image/png;base64,Alpha Project"}}],"tool_calls":[{"id":"call_1","function":{"name":"lookup","arguments":"Alpha Project"}}]}],"tools":[{"type":"function","function":{"name":"lookup","parameters":{"description":"Alpha Project"}}}],"user":"Alpha Project"});
-    transform_chat_request(&mut request, &engine, &Policy::strict(), &mut map)
+    transform_chat_request(&mut request, &engine, &Policy::balanced(), &mut map)
         .unwrap_or_else(|error| panic!("transform: {error}"));
     assert_ne!(
         request["messages"][0]["content"][0]["text"],
@@ -66,7 +66,7 @@ fn chat_transforms_nested_arguments_from_compatible_providers() {
 fn responses_preserves_ids_and_encrypted_reasoning() {
     let (engine, mut map) = setup();
     let mut request = json!({"instructions":"Alpha Project","input":[{"type":"message","content":[{"type":"input_text","text":"Alpha Project"},{"type":"input_image","file_id":"Alpha Project"}]},{"type":"function_call_output","call_id":"Alpha Project","output":"Alpha Project"}],"reasoning":{"encrypted_content":"Alpha Project"}});
-    transform_responses_request(&mut request, &engine, &Policy::strict(), &mut map)
+    transform_responses_request(&mut request, &engine, &Policy::balanced(), &mut map)
         .unwrap_or_else(|error| panic!("transform: {error}"));
     assert_ne!(request["instructions"], "Alpha Project");
     assert_ne!(request["input"][0]["content"][0]["text"], "Alpha Project");
@@ -84,11 +84,79 @@ fn responses_transforms_text_parts_in_function_call_output_lists() {
     let (engine, mut map) = setup();
     let mut request = json!({"input":[{"type":"function_call_output","call_id":"call_1","output":[{"type":"input_text","text":"Alpha Project"},{"type":"input_file","file_id":"Alpha Project"}]}]});
 
-    transform_responses_request(&mut request, &engine, &Policy::strict(), &mut map)
+    transform_responses_request(&mut request, &engine, &Policy::balanced(), &mut map)
         .unwrap_or_else(|error| panic!("transform: {error}"));
 
     assert_ne!(request["input"][0]["output"][0]["text"], "Alpha Project");
     assert_eq!(request["input"][0]["output"][1]["file_id"], "Alpha Project");
+}
+
+#[test]
+fn responses_transforms_function_call_arguments_in_conversation_history() {
+    let (engine, mut map) = setup();
+    let mut request = json!({
+        "input": [{
+            "type": "function_call",
+            "call_id": "call_1",
+            "name": "lookup",
+            "arguments": "{\"project\":\"Alpha Project\"}"
+        }]
+    });
+
+    transform_responses_request(&mut request, &engine, &Policy::strict(), &mut map)
+        .unwrap_or_else(|error| panic!("transform: {error}"));
+
+    let arguments = request["input"][0]["arguments"]
+        .as_str()
+        .unwrap_or_else(|| panic!("arguments"));
+    assert!(!arguments.contains("Alpha Project"));
+    assert!(arguments.contains("__LPG_CUSTOM_"));
+}
+
+#[test]
+fn strict_policy_rejects_uninspected_openai_content() {
+    let (engine, mut map) = setup();
+    let mut request = json!({"messages":[{"role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,opaque"}]}]});
+    let mut report = RequestPrivacyReport::default();
+
+    assert!(
+        transform_chat_request_with_report(
+            &mut request,
+            &engine,
+            &Policy::strict(),
+            &mut map,
+            &mut report,
+        )
+        .is_err()
+    );
+    assert!(report.has_uninspected_content());
+    assert!(report.actions().contains(&"block".to_owned()));
+}
+
+#[test]
+fn balanced_policy_reports_uninspected_responses_content() {
+    let (engine, mut map) = setup();
+    let mut request = json!({"input":[{"type":"message","content":[{"type":"input_file","file_id":"file_123"}]}]});
+    let mut report = RequestPrivacyReport::default();
+
+    transform_responses_request_with_report(
+        &mut request,
+        &engine,
+        &Policy::balanced(),
+        &mut map,
+        &mut report,
+    )
+    .unwrap_or_else(|error| panic!("responses transform: {error}"));
+
+    assert_eq!(
+        report.category_counts().get("uninspected_content"),
+        Some(&1)
+    );
+    assert!(report.actions().contains(&"warn".to_owned()));
+    assert_eq!(
+        report.previews()[0].display(),
+        "openai_responses_content:file"
+    );
 }
 
 #[test]

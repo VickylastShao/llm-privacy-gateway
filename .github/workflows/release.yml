@@ -6,6 +6,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   secret-scan:
@@ -149,6 +151,13 @@ jobs:
             }
           $manifest = Join-Path $bundle "SHA256SUMS.txt"
           [IO.File]::WriteAllText($manifest, ($lines -join "`n") + "`n", [Text.Encoding]::ASCII)
+      - name: Attest Windows release artifacts
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: |
+            apps/desktop/src-tauri/target/release/bundle/**/*.exe
+            apps/desktop/src-tauri/target/release/bundle/SHA256SUMS.txt
+            apps/desktop/src-tauri/target/release/bundle/lpg-sbom.spdx.json
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           draft: true
