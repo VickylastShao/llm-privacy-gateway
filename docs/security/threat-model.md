@@ -6,4 +6,4 @@ Controls: loopback binding, protocol-scoped local-key digest comparison, operati
 
 Desktop profiles persist in SQLite without secret values. Windows builds reload upstream keys, local keys, mapping keys, and custom dictionaries from Windows Credential Manager. Encrypted reversible mapping records persist in SQLite and are reloaded through the profile-scoped mapping backend after restart. These paths still require clean-machine Windows release verification before distribution.
 
-Residual risks include detector false negatives, compromised endpoint, malicious local process with access to user credentials, and unsupported request paths.
+Residual risks include detector false negatives, compromised endpoint, malicious local process with access to user credentials, and traffic that bypasses the gateway. Supported routes classify uninspected content before forwarding: strict mode fails closed, while balanced and monitor modes preserve compatibility and emit a visible partially-inspected activity. This classification does not make opaque image, file, audio, or document payloads safe.

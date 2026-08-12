@@ -1,0 +1,69 @@
+[
+  { "id": "custom", "name": "Custom", "urls": {} },
+  {
+    "id": "openai",
+    "name": "OpenAI",
+    "urls": { "openai": "https://api.openai.com/v1" },
+    "environment": { "protocol": "openai", "keyVariables": ["OPENAI_API_KEY"], "urlVariables": ["OPENAI_BASE_URL", "OPENAI_API_BASE"] }
+  },
+  {
+    "id": "anthropic",
+    "name": "Anthropic",
+    "urls": { "anthropic": "https://api.anthropic.com" },
+    "environment": { "protocol": "anthropic", "keyVariables": ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"], "urlVariables": ["ANTHROPIC_BASE_URL"] }
+  },
+  {
+    "id": "deepseek",
+    "name": "DeepSeek",
+    "urls": { "openai": "https://api.deepseek.com", "anthropic": "https://api.deepseek.com/anthropic" },
+    "environment": { "protocol": "openai", "keyVariables": ["DEEPSEEK_API_KEY"], "urlVariables": ["DEEPSEEK_BASE_URL"] }
+  },
+  {
+    "id": "gemini",
+    "name": "Google Gemini",
+    "urls": { "openai": "https://generativelanguage.googleapis.com/v1beta/openai/" },
+    "environment": { "protocol": "openai", "keyVariables": ["GEMINI_API_KEY"], "urlVariables": ["GEMINI_BASE_URL"] }
+  },
+  {
+    "id": "openrouter",
+    "name": "OpenRouter",
+    "urls": { "openai": "https://openrouter.ai/api/v1" },
+    "environment": { "protocol": "openai", "keyVariables": ["OPENROUTER_API_KEY"], "urlVariables": ["OPENROUTER_BASE_URL"] }
+  },
+  {
+    "id": "groq",
+    "name": "Groq",
+    "urls": { "openai": "https://api.groq.com/openai/v1" },
+    "environment": { "protocol": "openai", "keyVariables": ["GROQ_API_KEY"], "urlVariables": ["GROQ_BASE_URL"] }
+  },
+  {
+    "id": "xai",
+    "name": "xAI",
+    "urls": { "openai": "https://api.x.ai/v1" },
+    "environment": { "protocol": "openai", "keyVariables": ["XAI_API_KEY"], "urlVariables": ["XAI_BASE_URL"] }
+  },
+  {
+    "id": "mistral",
+    "name": "Mistral AI",
+    "urls": { "openai": "https://api.mistral.ai/v1" },
+    "environment": { "protocol": "openai", "keyVariables": ["MISTRAL_API_KEY"], "urlVariables": ["MISTRAL_BASE_URL"] }
+  },
+  {
+    "id": "kimi",
+    "name": "Kimi",
+    "urls": { "openai": "https://api.moonshot.cn/v1" },
+    "environment": { "protocol": "openai", "keyVariables": ["MOONSHOT_API_KEY"], "urlVariables": ["MOONSHOT_BASE_URL"] }
+  },
+  {
+    "id": "dashscope",
+    "name": "Alibaba Model Studio",
+    "urls": { "openai": "https://dashscope.aliyuncs.com/compatible-mode/v1", "anthropic": "https://dashscope.aliyuncs.com/apps/anthropic" },
+    "environment": { "protocol": "openai", "keyVariables": ["DASHSCOPE_API_KEY"], "urlVariables": ["DASHSCOPE_BASE_URL"] }
+  },
+  {
+    "id": "siliconflow",
+    "name": "SiliconFlow",
+    "urls": { "openai": "https://api.siliconflow.cn/v1" },
+    "environment": { "protocol": "openai", "keyVariables": ["SILICONFLOW_API_KEY"], "urlVariables": ["SILICONFLOW_BASE_URL"] }
+  }
+]

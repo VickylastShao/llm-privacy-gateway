@@ -88,6 +88,13 @@ fn credentials_detect_explicit_key_jwt_pem_assignment_and_connection_string() {
     );
     assert_single(
         &detector,
+        r#"{"api_key":"fixture_api_value_987654321"}"#,
+        EntityKind::ApiKey,
+        "secret_assignment",
+        "fixture_api_value_987654321",
+    );
+    assert_single(
+        &detector,
         "postgres://user:fixture_password@db.internal:5432/app",
         EntityKind::ConnectionString,
         "connection_string",
@@ -402,4 +409,38 @@ fn evaluation_fixtures_have_correct_offsets_and_detector_results() {
             assert_eq!(actual, expected, "fixture {}", fixture.id);
         }
     }
+}
+
+#[test]
+fn evaluation_corpus_has_a_release_minimum_and_negative_coverage() {
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../privacy-evals");
+    let mut total = 0;
+    let mut negative = 0;
+    for filename in [
+        "credentials.jsonl",
+        "china-identifiers.jsonl",
+        "bank-cards.jsonl",
+        "phone-numbers.jsonl",
+        "network-identifiers.jsonl",
+        "benign-lookalikes.jsonl",
+    ] {
+        let contents = fs::read_to_string(format!("{root}/{filename}"))
+            .unwrap_or_else(|error| panic!("unable to read fixture {filename}: {error}"));
+        for line in contents.lines().filter(|line| !line.is_empty()) {
+            let fixture: Fixture = serde_json::from_str(line)
+                .unwrap_or_else(|error| panic!("invalid fixture JSON: {error}"));
+            total += 1;
+            if fixture.expected.is_empty() {
+                negative += 1;
+            }
+        }
+    }
+    assert!(
+        total >= 55,
+        "privacy corpus unexpectedly shrank to {total} cases"
+    );
+    assert!(
+        negative >= 20,
+        "privacy corpus needs at least 20 false-positive controls"
+    );
 }

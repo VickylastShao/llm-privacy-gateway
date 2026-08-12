@@ -1,4 +1,4 @@
-use privacy_core::{Policy, PrivacyEngine, RequestPrivacyReport};
+use privacy_core::{Policy, PolicyAction, PrivacyEngine, RequestPrivacyReport};
 use serde_json::Value;
 use session_map::Pseudonymizer;
 
@@ -32,6 +32,7 @@ pub fn transform_chat_request_with_report<P: Pseudonymizer>(
     for message in messages {
         transform_message(message, engine, policy, map, report)?;
     }
+    enforce_content_coverage(policy, report)?;
     Ok(())
 }
 
@@ -107,22 +108,47 @@ fn transform_content<P: Pseudonymizer>(
         }
         Value::Array(parts) => {
             for part in parts {
-                if matches!(
-                    part.get("type").and_then(Value::as_str),
-                    Some("text") | Some("input_text")
-                ) && let Some(text_value) = part.get_mut("text")
-                {
-                    let Some(text) = text_value.as_str() else {
-                        continue;
-                    };
-                    let transformed = engine
-                        .transform_reported(text, policy, map, report)
-                        .map_err(|_| OpenAiProtocolError::Privacy)?;
-                    *text_value = Value::String(transformed.outbound_text().to_owned());
+                match part.get("type").and_then(Value::as_str) {
+                    Some("text") | Some("input_text") => {
+                        let Some(text_value) = part.get_mut("text") else {
+                            continue;
+                        };
+                        let Some(text) = text_value.as_str() else {
+                            report.record_uninspected_content("openai_non_string_text");
+                            continue;
+                        };
+                        let transformed = engine
+                            .transform_reported(text, policy, map, report)
+                            .map_err(|_| OpenAiProtocolError::Privacy)?;
+                        *text_value = Value::String(transformed.outbound_text().to_owned());
+                    }
+                    Some(kind) => report.record_uninspected_content(chat_content_label(kind)),
+                    None => report.record_uninspected_content("openai_chat_content:unknown"),
                 }
             }
         }
-        _ => {}
+        Value::Null => {}
+        _ => report.record_uninspected_content("openai_chat_content:invalid"),
+    }
+    Ok(())
+}
+
+fn chat_content_label(kind: &str) -> &'static str {
+    match kind {
+        "image_url" | "input_image" => "openai_chat_content:image",
+        "input_audio" | "audio" => "openai_chat_content:audio",
+        "file" | "input_file" => "openai_chat_content:file",
+        _ => "openai_chat_content:unknown",
+    }
+}
+
+fn enforce_content_coverage(
+    policy: &Policy,
+    report: &mut RequestPrivacyReport,
+) -> Result<(), OpenAiProtocolError> {
+    if policy.blocks_uninspected_content() && report.has_uninspected_content() {
+        report.record_policy_action(PolicyAction::Block);
+        return Err(OpenAiProtocolError::Privacy);
     }
     Ok(())
 }

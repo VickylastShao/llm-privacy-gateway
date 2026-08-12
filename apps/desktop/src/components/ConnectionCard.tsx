@@ -144,10 +144,17 @@ export function ConnectionCard({
         {balance?.supported && (
           <p className="balance-result">
             {balance.remaining !== undefined
-              ? t("balanceRemaining", {
-                  value: balance.remaining.toLocaleString(undefined, { maximumFractionDigits: 4 }),
-                  unit: balance.unit ?? "",
-                })
+              ? t(
+                  balance.metric === "api_key_limit"
+                    ? "balanceKeyRemaining"
+                    : "balanceAccountRemaining",
+                  {
+                    value: balance.remaining.toLocaleString(undefined, {
+                      maximumFractionDigits: 4,
+                    }),
+                    unit: balance.unit ?? "",
+                  },
+                )
               : balance.used !== undefined
                 ? t("balanceUsed", {
                     value: balance.used.toLocaleString(undefined, { maximumFractionDigits: 4 }),

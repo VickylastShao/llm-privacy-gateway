@@ -9,7 +9,9 @@ export function OneTimeSecret({ created, onDismiss, t }: Props) {
   const [copied, setCopied] = useState<string | null>(null);
   const [copyError, setCopyError] = useState(false);
 
-  useEffect(() => container.current?.focus(), [created.local_key]);
+  useEffect(() => {
+    if (created.local_key) container.current?.focus();
+  }, [created.local_key]);
 
   const copy = async (name: string, value: string) => {
     setCopyError(false);

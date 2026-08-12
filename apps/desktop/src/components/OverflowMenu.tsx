@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Translator } from "../i18n";
 
 type Props = {
@@ -14,10 +14,10 @@ export function OverflowMenu({ name, onDelete, onEdit, onRotate, t }: Props) {
   const root = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
 
-  const close = (restoreFocus: boolean) => {
+  const close = useCallback((restoreFocus: boolean) => {
     setOpen(false);
     if (restoreFocus) queueMicrotask(() => trigger.current?.focus());
-  };
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -58,7 +58,7 @@ export function OverflowMenu({ name, onDelete, onEdit, onRotate, t }: Props) {
       document.removeEventListener("keydown", onKeyDown);
       document.removeEventListener("pointerdown", onPointerDown);
     };
-  }, [open]);
+  }, [close, open]);
 
   return (
     <div className="overflow" ref={root}>

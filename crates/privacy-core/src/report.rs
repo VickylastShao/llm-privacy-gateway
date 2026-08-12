@@ -50,6 +50,37 @@ impl RequestPrivacyReport {
         &self.previews
     }
 
+    #[must_use]
+    pub fn has_uninspected_content(&self) -> bool {
+        self.category_counts.contains_key("uninspected_content")
+    }
+
+    pub fn record_uninspected_content(&mut self, content_kind: &str) {
+        *self
+            .category_counts
+            .entry("uninspected_content".to_owned())
+            .or_default() += 1;
+        self.record_action_label("warn");
+        let duplicate = self.previews.iter().any(|preview| {
+            preview.kind == "uninspected_content" && preview.display == content_kind
+        });
+        let existing = self
+            .previews
+            .iter()
+            .filter(|preview| preview.kind == "uninspected_content")
+            .count();
+        if !duplicate && existing < 3 {
+            self.previews.push(PrivacyPreview {
+                kind: "uninspected_content".to_owned(),
+                display: content_kind.to_owned(),
+            });
+        }
+    }
+
+    pub fn record_policy_action(&mut self, action: PolicyAction) {
+        self.record_action_label(action_label(action));
+    }
+
     pub(crate) fn record(&mut self, decision: &Decision, value: &str) {
         if decision.action() == PolicyAction::Allow {
             return;
@@ -57,10 +88,7 @@ impl RequestPrivacyReport {
         let kind = entity_label(decision.detection().kind()).to_owned();
         *self.category_counts.entry(kind.clone()).or_default() += 1;
         let action = action_label(decision.action()).to_owned();
-        if !self.actions.contains(&action) {
-            self.actions.push(action);
-            self.actions.sort();
-        }
+        self.record_action_label(&action);
         let Some(display) = masked_preview(decision.detection().kind(), value) else {
             return;
         };
@@ -75,6 +103,13 @@ impl RequestPrivacyReport {
             .count();
         if !duplicate && existing < 3 {
             self.previews.push(PrivacyPreview { kind, display });
+        }
+    }
+
+    fn record_action_label(&mut self, action: &str) {
+        if !self.actions.iter().any(|existing| existing == action) {
+            self.actions.push(action.to_owned());
+            self.actions.sort();
         }
     }
 }

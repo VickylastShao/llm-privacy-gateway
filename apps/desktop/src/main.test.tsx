@@ -315,6 +315,7 @@ describe("desktop single-page shell", () => {
     vi.mocked(api.queryBalance).mockResolvedValue({
       supported: true,
       provider: "DeepSeek",
+      metric: "account_balance",
       remaining: 42.5,
       unit: "CNY",
     });
@@ -322,7 +323,7 @@ describe("desktop single-page shell", () => {
 
     expect(await screen.findByText("1,234")).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Check quota / balance" }));
-    expect(await screen.findByText("Remaining: 42.5 CNY")).toBeTruthy();
+    expect(await screen.findByText("Account balance: 42.5 CNY")).toBeTruthy();
     expect(api.queryBalance).toHaveBeenCalledWith(profile.id);
   });
 
@@ -592,6 +593,31 @@ describe("desktop single-page shell", () => {
     expect(screen.getByText("sk-•••••••xyz")).toBeTruthy();
     expect(screen.getByText("Available only in this app session")).toBeTruthy();
     expect(screen.getByText("Pseudonymized")).toBeTruthy();
+  });
+
+  it("explains when balanced mode forwards content that was not inspected", async () => {
+    const user = userEvent.setup();
+    const api = emptyApi([{ ...profile, policy: "balanced" }]);
+    vi.mocked(api.queryActivity).mockResolvedValue({
+      ...interceptedActivity,
+      activities: [
+        {
+          ...interceptedActivity.activities[0],
+          status: 200,
+          category_counts: { uninspected_content: 1 },
+          actions: ["warn"],
+          previews: [{ kind: "uninspected_content", display: "Image content" }],
+        },
+      ],
+    });
+    render(<App api={api} initialLanguage="en-US" />);
+
+    expect(await screen.findByText("Uninspected content ×1")).toBeTruthy();
+    expect(screen.getAllByText("Partially inspected")).toHaveLength(2);
+
+    await user.click(screen.getByText("deepseek-chat"));
+    expect(screen.getByText("Uninspected content types")).toBeTruthy();
+    expect(screen.getByText("Image content")).toBeTruthy();
   });
 
   it("polls while protection runs without closing an expanded activity", async () => {

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   ConfirmDialog,
   ModalDialog,
@@ -63,10 +63,15 @@ export function App({
   const [discoveryPending, setDiscoveryPending] = useState(false);
   const [discoveryScanned, setDiscoveryScanned] = useState(false);
   const [usage, setUsage] = useState<UsageResponse>({ profiles: [], retention_hours: 168 });
-  const t = (key: TranslationKey, values?: Record<string, string>) =>
-    translate(locale, key, values);
+  const t = useCallback(
+    (key: TranslationKey, values?: Record<string, string>) => translate(locale, key, values),
+    [locale],
+  );
 
-  const reportError = (cause: unknown) => setError(localizeError(locale, cause));
+  const reportError = useCallback(
+    (cause: unknown) => setError(localizeError(locale, cause)),
+    [locale],
+  );
 
   useEffect(() => {
     void api.gatewayStatus().then(setStatus).catch(reportError);
@@ -79,7 +84,7 @@ export function App({
       .catch(reportError)
       .finally(() => setProfilesLoaded(true));
     void api.listStartupIssues().then(setStartupIssues).catch(reportError);
-  }, [api]);
+  }, [api, reportError]);
 
   useEffect(() => {
     let active = true;
@@ -122,7 +127,7 @@ export function App({
       void api.queryUsage().then(setUsage).catch(() => undefined);
     }, 1_000);
     return () => window.clearInterval(timer);
-  }, [api, activityLimit, locale, status.running]);
+  }, [api, activityLimit, reportError, status.running, t]);
 
   useEffect(() => {
     if (!profilesLoaded || !showForm || discoveryScanned) return;

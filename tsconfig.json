@@ -1,1 +1,1 @@
-{"compilerOptions":{"target":"ES2022","lib":["ESNext","DOM"],"types":["node"],"strict":true,"jsx":"react-jsx","module":"ESNext","moduleResolution":"bundler","noEmit":true},"include":["apps/desktop/src"]}
+{"compilerOptions":{"target":"ES2022","lib":["ESNext","DOM"],"types":["node"],"strict":true,"jsx":"react-jsx","module":"ESNext","moduleResolution":"bundler","resolveJsonModule":true,"noEmit":true},"include":["apps/desktop/src","config/providers.json"]}

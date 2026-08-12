@@ -309,6 +309,108 @@ async fn blocked_sensitive_request_publishes_one_safe_activity() {
 }
 
 #[tokio::test]
+async fn strict_policy_blocks_uninspected_content_and_records_coverage() {
+    let sink = Arc::new(CollectingSink::default());
+    let state = GatewayState::new_with_sink(
+        [RuntimeProfile::new(
+            Uuid::nil(),
+            GatewayProtocol::OpenAi,
+            "local-coverage-key".to_owned(),
+            "http://127.0.0.1:9/v1".to_owned(),
+            SecretString::from("upstream-key"),
+            [24; 32],
+        )],
+        sink.clone(),
+    )
+    .unwrap_or_else(|error| panic!("gateway state: {error}"));
+
+    let response = gateway_router(state)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header(header::AUTHORIZATION, "Bearer local-coverage-key")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(
+                    r#"{"model":"test","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,opaque"}}]}]}"#,
+                ))
+                .unwrap_or_else(|error| panic!("request: {error}")),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("gateway: {error}"));
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let events = sink
+        .events
+        .lock()
+        .unwrap_or_else(|_| panic!("activity lock"));
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        events[0]
+            .report
+            .category_counts()
+            .get("uninspected_content"),
+        Some(&1)
+    );
+    assert!(events[0].report.actions().contains(&"block".to_owned()));
+}
+
+#[tokio::test]
+async fn balanced_policy_forwards_uninspected_content_with_visible_warning() {
+    let mock = axum::Router::new().route(
+        "/v1/chat/completions",
+        post(|| async { "{\"id\":\"mock\"}" }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap_or_else(|error| panic!("mock bind: {error}"));
+    let address = listener
+        .local_addr()
+        .unwrap_or_else(|error| panic!("mock address: {error}"));
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, mock).await;
+    });
+    let sink = Arc::new(CollectingSink::default());
+    let mut profile = RuntimeProfile::new(
+        Uuid::nil(),
+        GatewayProtocol::OpenAi,
+        "local-balanced-coverage-key".to_owned(),
+        format!("http://{address}/v1"),
+        SecretString::from("upstream-key"),
+        [25; 32],
+    );
+    profile.policy = privacy_core::Policy::balanced();
+    let state = GatewayState::new_with_sink([profile], sink.clone())
+        .unwrap_or_else(|error| panic!("gateway state: {error}"));
+
+    let response = gateway_router(state)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header(
+                    header::AUTHORIZATION,
+                    "Bearer local-balanced-coverage-key",
+                )
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(
+                    r#"{"model":"test","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,opaque"}}]}]}"#,
+                ))
+                .unwrap_or_else(|error| panic!("request: {error}")),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("gateway: {error}"));
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let events = sink
+        .events
+        .lock()
+        .unwrap_or_else(|_| panic!("activity lock"));
+    assert_eq!(events.len(), 1);
+    assert!(events[0].report.actions().contains(&"warn".to_owned()));
+}
+
+#[tokio::test]
 async fn activity_replaces_sensitive_model_and_request_id_metadata() {
     const MODEL_CANARY: &str = "sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890";
     const REQUEST_CANARY: &str = "sk-ant-api03-abcdefghijklmnopqrstuvwx123456";

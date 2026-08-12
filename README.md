@@ -19,7 +19,7 @@ Windows-first local gateway for API clients that use OpenAI-compatible or Anthro
 - Visible startup recovery for saved connections whose local credentials, mapping key, or custom dictionary can no longer be loaded; removal requires explicit confirmation.
 - Closing the window exits when protection is stopped. While protection is running it hides to the system tray, where **Show** reopens the window and **Exit** stops the gateway before quitting.
 
-It does not protect traffic that bypasses the local gateway. It does not claim complete detection or anonymization. Realtime, image/audio/video, Batch, webhook, cloud-provider-specific protocols, and browser-only chat sites are outside the current supported boundary.
+It does not protect traffic that bypasses the local gateway. It does not claim complete detection or anonymization. Realtime, image/audio/video inspection, file-content inspection, Batch, webhook, cloud-provider-specific protocols, and browser-only chat sites are outside the current supported boundary. Strict profiles block supported requests containing uninspected content blocks; balanced and monitor profiles forward them with a visible privacy-activity warning.
 
 Current release evidence and external blockers are tracked in [`docs/release-status.md`](docs/release-status.md).
 The local storage and network behavior is summarized in [`PRIVACY.md`](PRIVACY.md).

@@ -87,6 +87,9 @@ fn dictionary_finds_longest_exact_term_and_whitelist_suppresses_it() {
 
 #[test]
 fn templates_apply_documented_actions() {
+    assert!(Policy::strict().blocks_uninspected_content());
+    assert!(!Policy::balanced().blocks_uninspected_content());
+    assert!(!Policy::monitor().blocks_uninspected_content());
     assert_eq!(
         Policy::strict().action_for(&EntityKind::Email),
         PolicyAction::Pseudonymize

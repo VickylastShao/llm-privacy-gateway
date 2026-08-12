@@ -203,7 +203,7 @@ fn secret_assignment_regex() -> &'static Regex {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX.get_or_init(|| {
         Regex::new(
-            r#"(?i)\b(?P<key>api_key|token|password|secret)\s*(?:=|:)\s*(?:\"(?P<double>[^\"\r\n]{8,})\"|'(?P<single>[^'\r\n]{8,})'|(?P<bare>[^\s\"']{8,}))"#,
+            r#"(?i)[\"']?\b(?P<key>api_key|token|password|secret)\b[\"']?\s*(?:=|:)\s*(?:\"(?P<double>[^\"\r\n]{8,})\"|'(?P<single>[^'\r\n]{8,})'|(?P<bare>[^\s\"']{8,}))"#,
         )
         .unwrap_or_else(|error| panic!("valid secret assignment regex: {error}"))
     })
